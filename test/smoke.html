@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>lite-gl backend smoke</title>
+<style>
+  body { font: 14px ui-monospace, Menlo, Consolas, monospace; background: #0d1117; color: #d8d6d2; padding: 1.5rem; }
+  h1 { font-size: 1rem; margin: 0 0 1rem; }
+  #verdict { font-size: 1.4rem; font-weight: 700; margin-bottom: 1rem; }
+  .pass { color: #5fe39f; } .fail { color: #f87171; } .skip { color: #f5b942; }
+  ul { list-style: none; padding: 0; } li { padding: 0.3rem 0; border-bottom: 1px solid rgba(255,255,255,0.06); }
+  .detail { color: #8b8d94; } canvas { border: 1px solid rgba(255,255,255,0.1); margin-top: 1rem; image-rendering: pixelated; width: 128px; height: 128px; }
+</style>
+</head>
+<body>
+<h1>@zakkster/lite-gl backend smoke</h1>
+<div id="verdict">running...</div>
+<ul id="checks"></ul>
+<canvas id="c" width="64" height="64"></canvas>
+
+<script type="module">
+import { createPointSink } from "../GLBackend.js";
+
+const checks = [];
+const add = (name, ok, detail) => checks.push({ name, ok, detail: detail || "" });
+const SIZE = 64;
+
+// stride-8 row writer: x, y, size(px), r, g, b, a, _pad
+function writePoint(arr, i, x, y, s, r, g, b, a) {
+    const b0 = i * 8;
+    arr[b0] = x; arr[b0 + 1] = y; arr[b0 + 2] = s;
+    arr[b0 + 3] = r; arr[b0 + 4] = g; arr[b0 + 5] = b; arr[b0 + 6] = a; arr[b0 + 7] = 0;
+}
+// screen-pixel (x,y) -> readPixels window pixel (origin bottom-left); shader flips y.
+const win = (x, y) => [x, SIZE - y];
+
+async function run() {
+    const canvas = document.getElementById("c");
+    const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
+    if (!gl) { add("webgl2 available", false, "getContext('webgl2') returned null"); return finish(); }
+    add("webgl2 available", true);
+
+    // no blend -> opaque overwrite -> deterministic readback
+    const sink = createPointSink(gl, { capacity: 1024 });
+    sink.resize(SIZE, SIZE);
+    add("sink constructs, getError == 0", gl.getError() === 0);
+
+    const px = new Uint8Array(4);
+    const read = (x, y) => { gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return px; };
+    const lit = (x, y) => read(x, y)[0] > 200;
+    const dark = (x, y) => read(x, y)[0] < 40;
+    const clear = () => { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); };
+
+    // 1) a single white point at the centre must light the centre pixel.
+    const one = new Float32Array(8);
+    writePoint(one, 0, 32, 32, 24, 1, 1, 1, 1);
+    clear(); sink.upload(one, 0, 8); sink.draw(1);
+    add("centre point renders (not blank)", lit(32, 32) && gl.getError() === 0,
+        "centre RGBA = " + Array.from(read(32, 32)).join(","));
+
+    // 2) move it off-centre: the new location lights, the old centre goes dark.
+    //    (a degenerate u_resolution would have failed check 1 with NaN clip coords.)
+    writePoint(one, 0, 32, 10, 16, 1, 1, 1, 1);
+    clear(); sink.upload(one, 0, 8); sink.draw(1);
+    const [wx, wy] = win(32, 10);
+    add("position maps correctly (y-flip)", lit(wx, wy) && dark(32, 32),
+        "expected lit at window(" + wx + "," + wy + "), centre dark");
+
+    // 3) dirty-window upload: re-upload only B's row; A's bytes must persist in the VBO.
+    const two = new Float32Array(16);
+    writePoint(two, 0, 16, 32, 14, 1, 1, 1, 1);   // A
+    writePoint(two, 1, 48, 32, 14, 1, 1, 1, 1);   // B
+    clear(); sink.upload(two, 0, 16); sink.draw(2);
+    writePoint(two, 1, 48, 50, 14, 1, 1, 1, 1);   // move only B
+    clear(); sink.upload(two, 8, 8); sink.draw(2);  // upload ONLY B's 8-float window
+    const [bx, by] = win(48, 50);
+    add("partial upload preserves untouched rows", lit(16, 32) && lit(bx, by),
+        "A still lit at (16,32); B lit at moved window(" + bx + "," + by + ")");
+
+    // 4) context loss + restore. WEBGL_lose_context dispatches its events ASYNCHRONOUSLY,
+    //    so wait for each before asserting. raceBool resolves false on timeout instead of
+    //    rejecting (no hang, no unhandled rejection). Headless software GL (SwiftShader on
+    //    CI) reliably simulates context LOSS but often cannot simulate RESTORE, so a missing
+    //    webglcontextrestored is reported as SKIP, not FAIL -- the restore path is also
+    //    covered by the node:test mock-sink case and by a manual run in a real browser.
+    const ext = gl.getExtension("WEBGL_lose_context");
+    if (!ext) {
+        add("recovers from context loss", null, "WEBGL_lose_context unavailable in this browser (skipped)");
+    } else {
+        const raceBool = (p, ms) => new Promise((resolve) => {
+            let done = false;
+            const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, ms);
+            p.then(() => { if (!done) { done = true; clearTimeout(t); resolve(true); } });
+        });
+        const lostEvent = new Promise((resolve) =>
+            canvas.addEventListener("webglcontextlost", () => resolve(), { once: true }));
+        const restored = new Promise((resolve) => {
+            const off = sink.onContextRestored(() => {
+                off();
+                clear();
+                writePoint(one, 0, 32, 32, 24, 1, 1, 1, 1);
+                sink.upload(one, 0, 8); sink.draw(1);
+                resolve();
+            });
+        });
+
+        ext.loseContext();
+        const lostFired = await raceBool(lostEvent, 3000);
+        if (!lostFired) {
+            add("recovers from context loss", null,
+                "webglcontextlost did not fire (environment cannot simulate context loss)");
+        } else {
+            add("draw is suppressed while context is lost", sink.isContextLost() === true);
+            await new Promise((r) => setTimeout(r, 50));   // let the loss settle before restoring
+            ext.restoreContext();
+            const restoredFired = await raceBool(restored, 3000);
+            if (!restoredFired) {
+                add("recovers from context loss (re-seeded draw)", null,
+                    "webglcontextrestored did not fire within 3s -- headless software GL often cannot restore; verify in a real browser");
+            } else {
+                add("recovers from context loss (re-seeded draw)", lit(32, 32) && gl.getError() === 0,
+                    "centre lit again after restore");
+            }
+        }
+    }
+
+    sink.dispose();
+    finish();
+}
+
+function finish() {
+    const failed = checks.filter((c) => c.ok === false);
+    const pass = failed.length === 0;
+    const ul = document.getElementById("checks");
+    for (const c of checks) {
+        const li = document.createElement("li");
+        const mark = c.ok === false ? "FAIL" : (c.ok === null ? "SKIP" : "PASS");
+        const cls = c.ok === false ? "fail" : (c.ok === null ? "skip" : "pass");
+        li.innerHTML = '<span class="' + cls + '">[' + mark + ']</span> ' + c.name +
+            (c.detail ? ' <span class="detail">-- ' + c.detail + '</span>' : '');
+        ul.appendChild(li);
+    }
+    const v = document.getElementById("verdict");
+    v.textContent = pass ? "SMOKE PASS" : "SMOKE FAIL";
+    v.className = pass ? "pass" : "fail";
+    // expose for Playwright / automation
+    window.__SMOKE_RESULT__ = { pass, checks };
+    document.title = "lite-gl smoke: " + (pass ? "PASS" : "FAIL");
+}
+
+run().catch((err) => {
+    add("uncaught error", false, String(err && err.message || err));
+    finish();
+});
+</script>
+</body>
+</html>

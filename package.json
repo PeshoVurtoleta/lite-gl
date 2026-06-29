@@ -1,0 +1,88 @@
+{
+  "name": "@zakkster/lite-gl",
+  "version": "1.0.0",
+  "description": "Signal-native instanced primitive renderer: project ~1M points/quads/lines from reactive inputs, upload only what changed, draw in one instanced call. Zero-GC core (renderer-agnostic, tested) + a browser WebGL2 backend. Built for reactive charts at 1M points, not as a Pixi competitor.",
+  "type": "module",
+  "main": "./GL.js",
+  "module": "./GL.js",
+  "types": "./GL.d.ts",
+  "exports": {
+    ".": {
+      "types": "./GL.d.ts",
+      "node": "./GL.js",
+      "import": "./GL.js",
+      "default": "./GL.js"
+    },
+    "./backend": {
+      "types": "./GLBackend.d.ts",
+      "node": "./GLBackend.js",
+      "import": "./GLBackend.js",
+      "default": "./GLBackend.js"
+    }
+  },
+  "sideEffects": false,
+  "files": [
+    "GL.js",
+    "GL.d.ts",
+    "GLBackend.js",
+    "GLBackend.d.ts",
+    "README.md",
+    "CHANGELOG.md",
+    "llms.txt",
+    "LICENSE.txt"
+  ],
+  "scripts": {
+    "test": "node --test test/GL_test.mjs",
+    "test:smoke": "playwright test test/smoke.spec.mjs"
+  },
+  "peerDependencies": {
+    "@zakkster/lite-signal": ">=1.5.0-alpha",
+    "@zakkster/lite-raf": "^1.0.0"
+  },
+  "devDependencies": {
+    "@zakkster/lite-signal": "1.6.0-preview.2",
+    "@zakkster/lite-raf": "^1.1.0",
+    "@playwright/test": "^1.49.0"
+  },
+  "overrides": {
+    "@zakkster/lite-raf": {
+      "@zakkster/lite-signal": "$@zakkster/lite-signal"
+    }
+  },
+  "keywords": [
+    "webgl",
+    "webgl2",
+    "instanced",
+    "renderer",
+    "chart",
+    "points",
+    "scatter",
+    "zero-gc",
+    "reactive",
+    "signals",
+    "gpu",
+    "esm",
+    "lite-signal"
+  ],
+  "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/PeshoVurtoleta/lite-gl.git"
+  },
+  "homepage": "https://github.com/PeshoVurtoleta/lite-gl#readme",
+  "bugs": {
+    "url": "https://github.com/PeshoVurtoleta/lite-gl/issues",
+    "email": "shinikchiev@yahoo.com"
+  },
+  "funding": {
+    "type": "github",
+    "url": "https://github.com/sponsors/PeshoVurtoleta"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}

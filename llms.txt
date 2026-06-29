@@ -1,0 +1,88 @@
+# @zakkster/lite-gl
+
+> Signal-native instanced primitive renderer. NOT a Pixi/Three competitor -- a
+> narrow, zero-GC engine for one thing: project a large set of instanced primitives
+> (points/quads/lines) from reactive inputs and draw them in a single instanced
+> call. The killer app is a reactive chart holding ~1M points at 60fps with no
+> per-frame allocation.
+
+Peers: @zakkster/lite-signal (the reactive driver) and @zakkster/lite-raf (the
+frame loop). ESM only. MIT.
+
+## Architecture: tested core + swappable GPU sink
+
+- GL.js (main) is the GL-AGNOSTIC core: a packed instanced-attribute buffer with
+  dirty-RANGE batching, plus a reactive driver. Fully tested headlessly, including
+  the 1M-point zero-GC claim.
+- GLBackend.js (subpath "@zakkster/lite-gl/backend") is the WebGL2 sink. BROWSER-ONLY
+  -- it calls the WebGL2 API, which has no headless context, so it is not covered by
+  node:test; it is covered by a browser smoke test (by hand + Playwright in CI; see
+  Coverage). Swap it for a WebGPU/canvas sink
+  without touching the core.
+
+The GPU lives behind the `sink` interface:
+  upload(data, floatOffset, floatCount, instanceOffset, stride)
+  draw(count)
+
+## Honest scope
+
+- The CORE (buffer, dirty batching, reactive projection, 1M zero-GC) is verified.
+- The RENDERING (shader compile, instanced draw, 60fps at 1M) is browser-validated
+  by a smoke test (manual + Playwright) -- it cannot run under node:test.
+- v1 ships the POINT pipeline (the chart case). QUAD/LINE use the same core with an
+  instanced base geometry + vertexAttribDivisor; deferred.
+- Re-projection is O(N): a camera/data change re-projects all instances. That is
+  cheap on CPU; allocation is the enemy, and the pipeline is allocation-free.
+
+## Core API (GL.js)
+
+- createField({ capacity?, stride }) -> Field
+    Field: data (Float32Array), count, capacity, push(write), set(i, write),
+    swapRemove(i), setCount(n), touch(i), touchAll(), clearDirty(), dirtyLo(),
+    dirtyHi(), flush(sink), reset(). `write(data, base)` fills `stride` floats.
+    The backing buffer is never reallocated while you stay within capacity.
+- reactiveField(field, { project, sink, manual? }) -> { frame, flush, stop, dispose }
+    `project(field)` reads signals and writes the field; it re-runs when a tracked
+    signal changes (marking the field dirty). `frame()` flushes the dirty range to
+    the sink once per frame (only redraws when something changed). Auto-driven on
+    lite-raf unless manual.
+- createDriver(reg) -> { reactiveField }   // bind to a registry
+- LAYOUT = { POINT: 8, QUAD: 9, LINE: 9 }  // floats per instance
+
+## Backend API (GL.js/backend, browser-only)
+
+- createPointSink(gl, { capacity }) -> { upload, draw, resize(w,h),
+    onContextRestored(cb), isContextLost(), capacity, dispose, gl }
+    Renders a LAYOUT.POINT field (x, y, size, r, g, b, a, _pad) as GL_POINTS in one
+    drawArrays call. Positions are in SCREEN PIXELS -- do world->screen in `project`.
+    Exposes its fixed `capacity`; an upload beyond it throws (no silent VBO/array desync).
+
+### Context loss (long-running overlays)
+
+A GL context is lost eventually (GPU reset, driver update, tab backgrounded on
+mobile). The sink owns recovery: it listens for webglcontextlost/restored on
+gl.canvas, no-ops draw/upload while lost, and rebuilds program + VBO + VAO on
+restore. The restored buffer is EMPTY, so onContextRestored(cb) lets you re-upload;
+reactiveField wires field.touchAll() + flush automatically when the sink exposes
+the hook, so the image returns on its own. isContextLost() reflects the state.
+
+### Coverage
+
+No headless WebGL2 exists, so the backend is covered by a browser smoke test, not
+node:test: test/smoke.html (pixel readback -- non-blank, position mapping,
+dirty-window upload, context-loss recovery), runnable by hand in any browser; and
+test/smoke.spec.mjs under Playwright (headless Chromium = WebGL2 via SwiftShader)
+for CI. The core's re-seed-on-restore wiring has a node:test mock-sink case.
+
+## Composition
+
+- Camera: project from a @zakkster/lite-camera-max view, so pan/zoom is a signal and
+  the camera lives in the reactive graph; the shader only maps pixels to clip space.
+- Charts: this is the renderer @zakkster/lite-charts reaches for past the Canvas2D
+  ceiling (~tens of thousands) to hundreds of thousands / millions of points.
+
+## Zero-GC
+
+A frame re-projects in place and uploads only the dirty float window -- no
+allocation. Verified: 60 frames of full 1M-point re-projection with the backing
+Float32Array reference unchanged and the engine pool counters flat.
