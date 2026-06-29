@@ -1,5 +1,16 @@
 # @zakkster/lite-gl
 
+[![npm version](https://img.shields.io/npm/v/@zakkster/lite-gl.svg?style=for-the-badge&color=latest)](https://www.npmjs.com/package/@zakkster/lite-gl)
+![Zero-GC](https://img.shields.io/badge/Zero--GC-Hot%20path-00C853?style=for-the-badge&logo=leaf&logoColor=white)
+[![sponsor](https://img.shields.io/badge/sponsor-PeshoVurtoleta-ea4aaa.svg?logo=github)](https://github.com/sponsors/PeshoVurtoleta)
+[![npm bundle size](https://img.shields.io/bundlephobia/minzip/@zakkster/lite-gl?style=for-the-badge)](https://bundlephobia.com/result?p=@zakkster/lite-gl)
+[![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-gl?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-gl)
+[![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-gl?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-gl)
+[![lite-signal peer](https://img.shields.io/badge/peer-lite--signal-blue?style=for-the-badge)](https://github.com/PeshoVurtoleta/lite-signal)
+![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational)
+![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
+
 **A signal-native instanced primitive renderer — built for reactive charts at ~1M points, not as a Pixi competitor.**
 
 The moat here isn't the `gl.draw` call; Pixi and Three have that. It's the
