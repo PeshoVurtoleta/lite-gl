@@ -29,8 +29,9 @@ The GPU lives behind the `sink` interface:
 - The CORE (buffer, dirty batching, reactive projection, 1M zero-GC) is verified.
 - The RENDERING (shader compile, instanced draw, 60fps at 1M) is browser-validated
   by a smoke test (manual + Playwright) -- it cannot run under node:test.
-- v1 ships the POINT pipeline (the chart case). QUAD/LINE use the same core with an
-  instanced base geometry + vertexAttribDivisor; deferred.
+- v1.1 ships the POINT and QUAD pipelines (scatter/particles + bars, sized/rotated
+  markers, heatmap cells). Both drive the same core; QUAD adds a static instanced
+  unit-quad base geometry + vertexAttribDivisor. LINE uses the same pattern; deferred.
 - Re-projection is O(N): a camera/data change re-projects all instances. That is
   cheap on CPU; allocation is the enemy, and the pipeline is allocation-free.
 
@@ -56,6 +57,12 @@ The GPU lives behind the `sink` interface:
     Renders a LAYOUT.POINT field (x, y, size, r, g, b, a, _pad) as GL_POINTS in one
     drawArrays call. Positions are in SCREEN PIXELS -- do world->screen in `project`.
     Exposes its fixed `capacity`; an upload beyond it throws (no silent VBO/array desync).
+- createQuadSink(gl, { capacity }) -> same surface as createPointSink
+    Renders a LAYOUT.QUAD field (x, y, w, h, rot, r, g, b, a; stride 9) as instanced
+    TRIANGLE_STRIP quads in one drawArraysInstanced call. Static unit-quad base geometry
+    (loc 0, divisor 0) + per-instance attrs (loc 1..4, divisor 1) via vertexAttribDivisor.
+    Same dirty-window upload, capacity guard, and context-loss recovery as points.
+    Unlocks bars, sized/rotated scatter markers, and heatmap cells.
 
 ### Context loss (long-running overlays)
 
@@ -68,11 +75,16 @@ the hook, so the image returns on its own. isContextLost() reflects the state.
 
 ### Coverage
 
-No headless WebGL2 exists, so the backend is covered by a browser smoke test, not
-node:test: test/smoke.html (pixel readback -- non-blank, position mapping,
-dirty-window upload, context-loss recovery), runnable by hand in any browser; and
-test/smoke.spec.mjs under Playwright (headless Chromium = WebGL2 via SwiftShader)
-for CI. The core's re-seed-on-restore wiring has a node:test mock-sink case.
+No headless WebGL2 exists, so the backend has two coverage layers. (1) node:test
+against a MOCK WebGL2 context (test/GLBackend_test.mjs): the GL call sequence of both
+the POINT and QUAD sinks -- compile/link, one-time VBO sizing, instance attributes +
+vertexAttribDivisor, dirty-window bufferSubData, the drawArrays / drawArraysInstanced
+call, capacity guard, and teardown -- plus an end-to-end pass driving the GL.js core
+through each sink. (2) A browser smoke test for the real GPU pixels: test/smoke.html
+(pixel readback -- non-blank, position mapping, dirty-window upload, context-loss
+recovery), runnable by hand in any browser, and test/smoke.spec.mjs under Playwright
+(headless Chromium = WebGL2 via SwiftShader) for CI. The core's re-seed-on-restore
+wiring also has a node:test mock-sink case.
 
 ## Composition
 

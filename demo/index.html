@@ -1,0 +1,1218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>lite-gl · oscilloscope</title>
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
+          rel="stylesheet">
+    <style>
+        *, *::before, *::after {
+            box-sizing: border-box;
+        }
+
+        :root {
+            --bg-0: #07090d;
+            --bg-1: #0d1117;
+            --bg-2: #131922;
+            --bg-3: #1a2230;
+            --line: rgba(255, 255, 255, 0.06);
+            --line-strong: rgba(255, 255, 255, 0.14);
+            --text: #d8d6d2;
+            --text-dim: #8b8d94;
+            --text-faint: #555960;
+            /* hex first (authoritative fallback), oklch second (progressive enhancement) */
+            --green: #5fe39f;
+            --green: oklch(83% 0.14 158);
+            --green-dim: #2b7a52;
+            --cyan: #7dd3fc;
+            --cyan: oklch(83% 0.09 232);
+            --amber: #f5b942;
+            --amber: oklch(81% 0.14 82);
+            --magenta: #e879a8;
+            --magenta: oklch(72% 0.13 356);
+            --red: #f87171;
+            --glow-green: 0 0 12px rgba(95, 227, 159, 0.6), 0 0 30px rgba(95, 227, 159, 0.22);
+            --glow-magenta: 0 0 12px rgba(232, 121, 168, 0.5);
+            --glow-cyan: 0 0 12px rgba(125, 211, 252, 0.5);
+        }
+
+        html, body {
+            height: 100%;
+            margin: 0;
+        }
+
+        body {
+            font-family: 'JetBrains Mono', ui-monospace, monospace;
+            font-size: 13px;
+            line-height: 1.5;
+            color: var(--text);
+            background: var(--bg-0);
+            overflow: hidden;
+            font-feature-settings: "tnum";
+        }
+
+        body::before {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background-image: radial-gradient(circle at 22% 0%, rgba(95, 227, 159, 0.05) 0%, transparent 42%),
+            radial-gradient(circle at 82% 100%, rgba(125, 211, 252, 0.04) 0%, transparent 52%);
+            z-index: 0;
+        }
+
+        body::after {
+            content: "";
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background: repeating-linear-gradient(0deg,
+            transparent 0, transparent 2px,
+            rgba(255, 255, 255, 0.013) 2px, rgba(255, 255, 255, 0.013) 3px);
+            z-index: 1;
+        }
+
+        #app {
+            position: relative;
+            z-index: 2;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        header.top {
+            display: flex;
+            align-items: center;
+            gap: 24px;
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--line);
+            background: linear-gradient(to bottom, var(--bg-1), var(--bg-0));
+        }
+
+        .brand {
+            display: flex;
+            align-items: baseline;
+            gap: 12px;
+            font-family: 'Space Mono', 'JetBrains Mono', monospace;
+        }
+
+        .brand .mark {
+            color: var(--green);
+            font-weight: 700;
+            font-size: 16px;
+            text-shadow: var(--glow-green);
+        }
+
+        .brand .pkg {
+            color: var(--text);
+            font-weight: 700;
+            font-size: 15px;
+        }
+
+        .brand .ver {
+            color: var(--text-faint);
+            font-size: 11px;
+        }
+
+        .tagline {
+            color: var(--text-dim);
+            font-size: 11px;
+            margin-left: auto;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+        }
+
+        .tagline .dot {
+            display: inline-block;
+            width: 7px;
+            height: 7px;
+            border-radius: 50%;
+            background: var(--green);
+            box-shadow: var(--glow-green);
+            margin-right: 6px;
+            animation: pulse 2s infinite ease-in-out;
+            vertical-align: 1px;
+        }
+
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.35;
+            }
+        }
+
+        nav.tabs {
+            display: flex;
+            background: var(--bg-1);
+            border-bottom: 1px solid var(--line);
+            padding: 0 18px;
+        }
+
+        nav.tabs button {
+            background: none;
+            border: 0;
+            color: var(--text-dim);
+            font-family: inherit;
+            font-size: 12px;
+            padding: 12px 18px;
+            cursor: pointer;
+            letter-spacing: 0.02em;
+            position: relative;
+            transition: color .15s;
+        }
+
+        @media (hover: hover) {
+            nav.tabs button:hover {
+                color: var(--text);
+            }
+        }
+
+        nav.tabs button[aria-current="true"] {
+            color: var(--green);
+        }
+
+        nav.tabs button[aria-current="true"]::after {
+            content: "";
+            position: absolute;
+            left: 12px;
+            right: 12px;
+            bottom: -1px;
+            height: 2px;
+            background: var(--green);
+            box-shadow: var(--glow-green);
+        }
+
+        nav.tabs .scene-num {
+            color: var(--text-faint);
+            margin-right: 8px;
+            font-weight: 300;
+        }
+
+        main {
+            flex: 1;
+            min-height: 0;
+            display: flex;
+            position: relative;
+        }
+
+        .scene {
+            flex: 1;
+            display: none;
+            min-height: 0;
+        }
+
+        .scene[data-active] {
+            display: flex;
+        }
+
+        .stage {
+            flex: 1;
+            min-height: 0;
+            position: relative;
+            overflow: hidden;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+            touch-action: none;
+        }
+
+        .panel {
+            width: 320px;
+            border-left: 1px solid var(--line);
+            background: var(--bg-1);
+            display: flex;
+            flex-direction: column;
+            overflow-y: auto;
+        }
+
+        .panel-head {
+            padding: 16px 20px 8px;
+            font-size: 10px;
+            letter-spacing: 0.18em;
+            text-transform: uppercase;
+            color: var(--text-faint);
+            border-bottom: 1px solid var(--line);
+        }
+
+        .panel section {
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--line);
+        }
+
+        .panel section h3 {
+            margin: 0 0 12px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.16em;
+            text-transform: uppercase;
+            color: var(--cyan);
+        }
+
+        .help-line {
+            color: var(--text-dim);
+            font-size: 11px;
+            margin: 0 0 12px;
+            line-height: 1.6;
+        }
+
+        .help-line code {
+            color: var(--green);
+        }
+
+        button.btn {
+            font-family: inherit;
+            font-size: 11px;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+            background: var(--bg-3);
+            color: var(--text);
+            border: 1px solid var(--line-strong);
+            padding: 8px 14px;
+            cursor: pointer;
+            transition: all .12s;
+        }
+
+        @media (hover: hover) {
+            button.btn:hover {
+                background: var(--bg-2);
+                border-color: var(--green-dim);
+                color: var(--green);
+            }
+        }
+
+        button.btn.primary {
+            background: var(--green-dim);
+            color: var(--bg-0);
+            border-color: var(--green);
+            font-weight: 700;
+        }
+
+        @media (hover: hover) {
+            button.btn.primary:hover {
+                background: var(--green);
+                color: var(--bg-0);
+            }
+        }
+
+        button.btn[aria-pressed="true"] {
+            background: var(--green-dim);
+            color: var(--bg-0);
+            border-color: var(--green);
+        }
+
+        .btn-row {
+            display: flex;
+            gap: 6px;
+            flex-wrap: wrap;
+        }
+
+        .field {
+            margin-bottom: 12px;
+        }
+
+        .field label {
+            display: flex;
+            justify-content: space-between;
+            font-size: 10px;
+            letter-spacing: 0.08em;
+            color: var(--text-faint);
+            text-transform: uppercase;
+            margin-bottom: 4px;
+        }
+
+        .field input[type="range"] {
+            width: 100%;
+            accent-color: var(--green);
+        }
+
+        .field-value {
+            color: var(--green);
+            font-weight: 700;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .metrics {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 6px;
+        }
+
+        .metric {
+            background: var(--bg-2);
+            border: 1px solid var(--line);
+            padding: 8px 10px;
+        }
+
+        .metric .k {
+            font-size: 9px;
+            letter-spacing: 0.12em;
+            color: var(--text-faint);
+            text-transform: uppercase;
+        }
+
+        .metric .v {
+            font-size: 16px;
+            font-weight: 500;
+            color: var(--text);
+            font-variant-numeric: tabular-nums;
+            margin-top: 2px;
+        }
+
+        .metric .v.green {
+            color: var(--green);
+        }
+
+        .metric .v.cyan {
+            color: var(--cyan);
+        }
+
+        .metric .v.amber {
+            color: var(--amber);
+        }
+
+        .metric .v.magenta {
+            color: var(--magenta);
+        }
+
+        .stage-overlay {
+            position: absolute;
+            pointer-events: none;
+            color: var(--text-dim);
+            font-size: 11px;
+            letter-spacing: 0.05em;
+        }
+
+        .stage-overlay.tl {
+            top: 14px;
+            left: 18px;
+        }
+
+        .stage-overlay.tr {
+            top: 14px;
+            right: 18px;
+            text-align: right;
+        }
+
+        .stage-overlay.bl {
+            bottom: 14px;
+            left: 18px;
+        }
+
+        .stage-overlay.br {
+            bottom: 14px;
+            right: 18px;
+            text-align: right;
+        }
+
+        .stage-overlay .big {
+            display: block;
+            color: var(--green);
+            font-size: 22px;
+            font-weight: 500;
+            font-variant-numeric: tabular-nums;
+            text-shadow: var(--glow-green);
+        }
+
+        .stage-overlay .big.magenta {
+            color: var(--magenta);
+            text-shadow: var(--glow-magenta);
+        }
+
+        .stage-overlay .label {
+            font-size: 9px;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-faint);
+        }
+
+        .legend {
+            display: flex;
+            gap: 14px;
+        }
+
+        .chip {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            font-size: 10px;
+            color: var(--text-dim);
+        }
+
+        .swatch {
+            width: 9px;
+            height: 9px;
+            border-radius: 2px;
+            background: var(--sw, var(--green));
+            box-shadow: 0 0 8px var(--sw, var(--green));
+        }
+
+        .no-webgl {
+            position: absolute;
+            inset: 0;
+            display: none;
+            align-items: center;
+            justify-content: center;
+            color: var(--red);
+            font-size: 12px;
+            letter-spacing: 0.05em;
+        }
+
+        .no-webgl[data-active] {
+            display: flex;
+        }
+    </style>
+</head>
+<body>
+<div id="app">
+    <header class="top">
+        <div class="brand">
+            <span class="mark">◐</span>
+            <span class="pkg">@zakkster/lite-gl</span>
+            <span class="ver">v1.1.0</span>
+        </div>
+        <div class="tagline"><span class="dot"></span>oscilloscope · instanced GPU renderer</div>
+    </header>
+
+    <nav class="tabs" id="tabs">
+        <button data-tab="field" aria-current="true"><span class="scene-num">01</span>Attractor Field</button>
+        <button data-tab="bars"><span class="scene-num">02</span>Quad Spectrum</button>
+        <button data-tab="dirty"><span class="scene-num">03</span>Dirty Window</button>
+    </nav>
+
+    <main>
+        <!-- ─── SCENE 01: FIELD (points, reactive camera) ─── -->
+        <section class="scene" data-scene="field" data-active>
+            <div class="stage" id="field-stage">
+                <canvas id="field-canvas"></canvas>
+                <div class="no-webgl" id="field-nogl">WebGL2 unavailable in this browser.</div>
+                <div class="stage-overlay tl">
+                    <span class="label">de jong attractor · GL_POINTS</span>
+                </div>
+                <div class="stage-overlay tr">
+                    <span class="label">points on gpu</span>
+                    <span class="big" id="field-count">0</span>
+                </div>
+                <div class="stage-overlay bl">
+                    <div class="legend">
+                        <div class="chip"><span class="swatch" style="--sw: var(--green)"></span>near</div>
+                        <div class="chip"><span class="swatch" style="--sw: var(--cyan)"></span>mid</div>
+                        <div class="chip"><span class="swatch" style="--sw: var(--magenta)"></span>far</div>
+                    </div>
+                </div>
+                <div class="stage-overlay br">
+                    <span class="label">drag to pan · scroll to zoom</span>
+                </div>
+            </div>
+            <aside class="panel">
+                <div class="panel-head">scene 01 · reactive field</div>
+                <section>
+                    <p class="help-line">
+                        A camera <code>signal</code> drives <code>reactiveField</code>: pan or zoom and the
+                        whole field re-projects and redraws in <strong>one upload + one draw</strong> — zero
+                        allocation. Idle with auto-rotate off and it redraws <strong>nothing</strong>.
+                    </p>
+                    <div class="btn-row">
+                        <button class="btn primary" id="field-rotate" aria-pressed="true">◐ auto-rotate</button>
+                        <button class="btn" id="field-reset">reset view</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>Load</h3>
+                    <div class="field">
+                        <label>points <span class="field-value" id="field-n-v">250K</span></label>
+                        <input type="range" id="field-n" min="50000" max="1000000" step="50000" value="250000">
+                    </div>
+                </section>
+                <section>
+                    <h3>Telemetry</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">fps</div>
+                            <div class="v green" id="field-fps">60</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">redraws</div>
+                            <div class="v cyan" id="field-redraws">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">zoom</div>
+                            <div class="v amber" id="field-zoom">1.00×</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">upload / frame</div>
+                            <div class="v magenta" id="field-upload">0</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+
+        <!-- ─── SCENE 02: BARS (quads) ─── -->
+        <section class="scene" data-scene="bars">
+            <div class="stage" id="bars-stage">
+                <canvas id="bars-canvas"></canvas>
+                <div class="no-webgl" id="bars-nogl">WebGL2 unavailable in this browser.</div>
+                <div class="stage-overlay tl"><span class="label">instanced quads · TRIANGLE_STRIP</span></div>
+                <div class="stage-overlay tr">
+                    <span class="label">quads / draw call</span>
+                    <span class="big magenta" id="bars-quads">0</span>
+                </div>
+                <div class="stage-overlay bl">
+                    <div class="legend">
+                        <div class="chip"><span class="swatch" style="--sw: var(--green)"></span>bars</div>
+                        <div class="chip"><span class="swatch" style="--sw: var(--magenta)"></span>rotated caps</div>
+                    </div>
+                </div>
+            </div>
+            <aside class="panel">
+                <div class="panel-head">scene 02 · quad spectrum</div>
+                <section>
+                    <p class="help-line">
+                        <code>createQuadSink</code> renders sized + rotated quads via <code>vertexAttribDivisor</code>.
+                        Every bar and every spinning cap is <strong>one instance</strong> in a <strong>single</strong>
+                        <code>drawArraysInstanced</code> call.
+                    </p>
+                </section>
+                <section>
+                    <h3>Signal</h3>
+                    <div class="field">
+                        <label>bars <span class="field-value" id="bars-n-v">128</span></label>
+                        <input type="range" id="bars-n" min="24" max="480" step="8" value="128">
+                    </div>
+                    <div class="field">
+                        <label>speed <span class="field-value" id="bars-speed-v">1.0×</span></label>
+                        <input type="range" id="bars-speed" min="0" max="30" step="1" value="10">
+                    </div>
+                </section>
+                <section>
+                    <h3>Telemetry</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">fps</div>
+                            <div class="v green" id="bars-fps">60</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">draw calls</div>
+                            <div class="v cyan" id="bars-draws">1</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+
+        <!-- ─── SCENE 03: DIRTY WINDOW (quads) ─── -->
+        <section class="scene" data-scene="dirty">
+            <div class="stage" id="dirty-stage">
+                <canvas id="dirty-canvas"></canvas>
+                <div class="no-webgl" id="dirty-nogl">WebGL2 unavailable in this browser.</div>
+                <div class="stage-overlay tl"><span class="label">dirty-range upload · bufferSubData</span></div>
+                <div class="stage-overlay tr">
+                    <span class="label">uploaded / total</span>
+                    <span class="big" id="dirty-pct">0%</span>
+                </div>
+                <div class="stage-overlay br"><span class="label" id="dirty-window">window —</span></div>
+            </div>
+            <aside class="panel">
+                <div class="panel-head">scene 03 · upload only what changed</div>
+                <section>
+                    <p class="help-line">
+                        The bright band is the only thing that changed this frame. The whole grid is drawn,
+                        but <code>flush</code> ships just the dirty float window to the GPU —
+                        the other <span id="dirty-rest">~98%</span> is never re-uploaded.
+                    </p>
+                </section>
+                <section>
+                    <h3>Sweep</h3>
+                    <div class="field">
+                        <label>window <span class="field-value" id="dirty-win-v">48</span></label>
+                        <input type="range" id="dirty-win" min="8" max="200" step="8" value="48">
+                    </div>
+                    <div class="field">
+                        <label>speed <span class="field-value" id="dirty-speed-v">6</span></label>
+                        <input type="range" id="dirty-speed" min="1" max="24" step="1" value="6">
+                    </div>
+                </section>
+                <section>
+                    <h3>Telemetry</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">fps</div>
+                            <div class="v green" id="dirty-fps">60</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">cells</div>
+                            <div class="v cyan" id="dirty-cells">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">floats up</div>
+                            <div class="v magenta" id="dirty-floats">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">of buffer</div>
+                            <div class="v amber" id="dirty-of">0%</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+    </main>
+</div>
+
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-signal": "https://esm.sh/@zakkster/lite-signal@1.6.0-preview.2",
+    "@zakkster/lite-raf": "https://esm.sh/@zakkster/lite-raf@1.1.0",
+    "@zakkster/lite-gl": "../GL.js",
+    "@zakkster/lite-gl/backend": "../GLBackend.js"
+  }
+}
+
+</script>
+
+<script type="module">
+  import { signal } from "@zakkster/lite-signal";
+  import { createField, reactiveField, LAYOUT } from "@zakkster/lite-gl";
+  import { createPointSink, createQuadSink } from "@zakkster/lite-gl/backend";
+
+  // ─── hoisted consts + cached lookups (zero GC) ───────────────────────────
+  const TAU = Math.PI * 2;
+  const DPR = Math.min(2, window.devicePixelRatio || 1);
+  const MAX_POINTS = 1_000_000;
+  const clamp = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x);
+  const clamp01 = (x) => (x < 0 ? 0 : x > 1 ? 1 : x);
+  const fmt = (n) => (n >= 1e6 ? (Math.round(n / 1e4) / 100) + "M"
+    : n >= 1e3 ? (Math.round(n / 100) / 10) + "K" : String(n | 0));
+
+  const $ = (id) => document.getElementById(id);
+
+  // Set a GL canvas to its CSS box in device pixels. Returns [w, h] in device px.
+  function sizeGL(canvas) {
+    const r = canvas.getBoundingClientRect();
+    const w = Math.max(1, Math.floor(r.width * DPR));
+    const h = Math.max(1, Math.floor(r.height * DPR));
+    if (canvas.width !== w) canvas.width = w;
+    if (canvas.height !== h) canvas.height = h;
+    return [w, h];
+  }
+
+  // ─── shared pure logic (verified headlessly in verify/demo_logic.mjs) ─────
+  function genAttractor(N, a, b, c, d) {
+    const wx = new Float64Array(N), wy = new Float64Array(N);
+    let x = 0.1, y = 0.1;
+    for (let i = 0; i < 800; i++) {
+      const nx = Math.sin(a * y) - Math.cos(b * x);
+      const ny = Math.sin(c * x) - Math.cos(d * y);
+      x = nx;
+      y = ny;
+    }
+    for (let i = 0; i < N; i++) {
+      const nx = Math.sin(a * y) - Math.cos(b * x);
+      const ny = Math.sin(c * x) - Math.cos(d * y);
+      x = nx;
+      y = ny;
+      wx[i] = x;
+      wy[i] = y;
+    }
+    return { wx, wy };
+  }
+
+  // phosphor ramp green -> cyan -> magenta, writes rgb (0..1) at out[o..o+2]
+  function phosphorInto(out, o, t) {
+    let r, g, b;
+    if (t < 0.5) {
+      const u = t * 2;
+      r = 95 + 30 * u;
+      g = 227 - 16 * u;
+      b = 159 + 93 * u;
+    } else {
+      const u = (t - 0.5) * 2;
+      r = 125 + 107 * u;
+      g = 211 - 90 * u;
+      b = 252 - 84 * u;
+    }
+    out[o] = r / 255;
+    out[o + 1] = g / 255;
+    out[o + 2] = b / 255;
+  }
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCENE 01 · ATTRACTOR FIELD (points, signal-driven camera)
+  // ══════════════════════════════════════════════════════════════════════════
+  const field = (() => {
+    const $canvas = $("field-canvas"), $nogl = $("field-nogl"), $stage = $("field-stage");
+    const $count = $("field-count"), $fps = $("field-fps"), $redraws = $("field-redraws");
+    const $zoomV = $("field-zoom"), $upload = $("field-upload");
+    const $rotate = $("field-rotate"), $reset = $("field-reset");
+    const $n = $("field-n"), $nV = $("field-n-v");
+
+    const gl = $canvas.getContext("webgl2", { antialias: false, alpha: true, preserveDrawingBuffer: true });
+    if (!gl) {
+      $nogl.setAttribute("data-active", "");
+      return {
+        resize() {
+        }, start() {
+        }, stop() {
+        },
+      };
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive phosphor glow
+
+    // 1M world points precomputed once; colors baked once into the field buffer.
+    const { wx, wy } = genAttractor(MAX_POINTS, -2.0, -2.0, -1.2, 2.0);
+    const fld = createField({ capacity: MAX_POINTS, stride: LAYOUT.POINT });
+    const sink = createPointSink(gl, { capacity: MAX_POINTS });
+    const data = fld.data;
+    for (let i = 0; i < MAX_POINTS; i++) {
+      const b = i * 8;
+      data[b + 2] = 2.2 * DPR;              // point size (device px)
+      phosphorInto(data, b + 3, i / MAX_POINTS);
+      data[b + 6] = 0.5;                     // alpha (additive)
+    }
+
+    let W = 1, H = 1, scale = 1;
+    const camX = signal(0), camY = signal(0), zoom = signal(1), phase = signal(0);
+
+    // reactive projection: re-runs when a tracked signal changes, marks the field dirty.
+    const project = (f) => {
+      const z = zoom(), cx = camX(), cy = camY(), ph = phase();
+      const sc = scale * z, cosP = Math.cos(ph), sinP = Math.sin(ph);
+      const hw = W * 0.5, hh = H * 0.5, d = f.data, n = f.count;
+      for (let i = 0; i < n; i++) {
+        const wxi = wx[i], wyi = wy[i];
+        const rx = wxi * cosP - wyi * sinP;
+        const ry = wxi * sinP + wyi * cosP;
+        const b = i * 8;
+        d[b] = hw + rx * sc - cx;
+        d[b + 1] = hh + ry * sc - cy;
+      }
+      f.touchAll();
+    };
+    const handle = reactiveField(fld, { manual: true, sink, project });
+
+    // interaction state (drag coalesced to one reproject per frame)
+    let dragging = false, dragDX = 0, dragDY = 0, lastX = 0, lastY = 0, autoRot = true;
+    let redraws = 0, running = false, raf = 0, t0 = performance.now();
+    let hudTick = 0, fpsT = t0, fpsN = 0, lastUpload = 0;
+
+    const controls = new AbortController();
+    const sig = controls.signal;
+    $canvas.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      $canvas.setPointerCapture(e.pointerId);
+    }, { signal: sig });
+    $canvas.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      dragDX += e.clientX - lastX;
+      dragDY += e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    }, { signal: sig });
+    $canvas.addEventListener("pointerup", (e) => {
+      dragging = false;
+      if ($canvas.hasPointerCapture(e.pointerId)) $canvas.releasePointerCapture(e.pointerId);
+    }, { signal: sig });
+    $canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      zoom.set(clamp(zoom() * (e.deltaY < 0 ? 1.12 : 0.893), 0.25, 14));
+    }, { signal: sig, passive: false });
+
+    $rotate.addEventListener("click", () => {
+      autoRot = !autoRot;
+      $rotate.setAttribute("aria-pressed", autoRot ? "true" : "false");
+    }, { signal: sig });
+    $reset.addEventListener("click", () => {
+      camX.set(0);
+      camY.set(0);
+      zoom.set(1);
+      phase.set(0);
+    }, { signal: sig });
+    $n.addEventListener("input", () => {
+      const n = +$n.value;
+      $nV.textContent = fmt(n);
+      fld.setCount(n);
+      fld.touchAll();
+      project(fld);           // reproject the new count immediately
+    }, { signal: sig });
+
+    fld.setCount(250_000);
+    project(fld);
+
+    function frame() {
+      if (!running) return;
+      if (dragDX || dragDY) {
+        camX.set(camX() - dragDX * DPR);
+        camY.set(camY() - dragDY * DPR);
+        dragDX = 0;
+        dragDY = 0;
+      }
+      if (autoRot) phase.set((performance.now() - t0) * 0.00016);
+
+      if (fld.dirtyLo() >= 0) {
+        lastUpload = (fld.dirtyHi() - fld.dirtyLo() + 1) * 8;
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        handle.frame();          // upload dirty range + one draw
+        redraws++;
+      }
+
+      fpsN++;
+      const now = performance.now();
+      if (now - fpsT >= 500) {
+        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        fpsT = now;
+        fpsN = 0;
+      }
+      if ((hudTick++ & 7) === 0) {
+        $count.textContent = fmt(fld.count);
+        $redraws.textContent = fmt(redraws);
+        $zoomV.textContent = zoom().toFixed(2) + "×";
+        $upload.textContent = fmt(lastUpload);
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+      const [w, h] = sizeGL($canvas);
+      W = w;
+      H = h;
+      scale = Math.min(W, H) / 2.6;
+      sink.resize(W, H);
+      project(fld);
+    }
+
+    return {
+      resize,
+      start() {
+        if (running) return;
+        running = true;
+        t0 = performance.now();
+        fpsT = t0;
+        fpsN = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+      },
+    };
+  })();
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCENE 02 · QUAD SPECTRUM (bars + rotated caps)
+  // ══════════════════════════════════════════════════════════════════════════
+  const bars = (() => {
+    const $canvas = $("bars-canvas"), $nogl = $("bars-nogl");
+    const $quads = $("bars-quads"), $fps = $("bars-fps"), $draws = $("bars-draws");
+    const $n = $("bars-n"), $nV = $("bars-n-v"), $speed = $("bars-speed"), $speedV = $("bars-speed-v");
+
+    const gl = $canvas.getContext("webgl2", { antialias: false, alpha: true });
+    if (!gl) {
+      $nogl.setAttribute("data-active", "");
+      return {
+        resize() {
+        }, start() {
+        }, stop() {
+        },
+      };
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+
+    const CAP = 480 * 2;
+    const fld = createField({ capacity: CAP, stride: LAYOUT.QUAD });
+    const sink = createQuadSink(gl, { capacity: CAP });
+
+    let W = 1, H = 1, count = 128, speed = 1.0, phase = 0;
+    let running = false, raf = 0, last = performance.now(), fpsT = last, fpsN = 0, hudTick = 0;
+
+    function layout() {
+      const data = fld.data;
+      const marginX = W * 0.04, usable = W - marginX * 2, step = usable / count;
+      const barW = step * 0.60, baseline = H * 0.90, maxH = H * 0.70;
+      for (let i = 0; i < count; i++) {
+        const t = i / count;
+        let v = 0.5 + 0.5 * Math.sin(phase * 1.3 + t * TAU * 2.0);
+        v *= 0.55 + 0.45 * Math.sin(phase * 0.7 + t * TAU * 5.0 + 1.3);
+        v = clamp01(Math.abs(v));
+        const h = 6 + v * maxH;
+        const cx = marginX + i * step + step * 0.5, cy = baseline - h * 0.5;
+        const b = i * 9;
+        data[b] = cx;
+        data[b + 1] = cy;
+        data[b + 2] = barW;
+        data[b + 3] = h;
+        data[b + 4] = 0;
+        phosphorInto(data, b + 5, v);
+        data[b + 8] = 0.90;
+        const bc = (count + i) * 9, cap = barW * 0.70;
+        data[bc] = cx;
+        data[bc + 1] = baseline - h;
+        data[bc + 2] = cap;
+        data[bc + 3] = cap;
+        data[bc + 4] = phase * 1.7;
+        data[bc + 5] = 0.91;
+        data[bc + 6] = 0.47;
+        data[bc + 7] = 0.66;
+        data[bc + 8] = 1.0;   // magenta caps
+      }
+      fld.setCount(count * 2);
+      fld.touchAll();
+    }
+
+    const controls = new AbortController();
+    $n.addEventListener("input", () => {
+      count = +$n.value;
+      $nV.textContent = count;
+    }, { signal: controls.signal });
+    $speed.addEventListener("input", () => {
+      speed = +$speed.value / 10;
+      $speedV.textContent = speed.toFixed(1) + "×";
+    }, { signal: controls.signal });
+
+    function frame() {
+      if (!running) return;
+      const now = performance.now();
+      phase += (now - last) * 0.001 * speed;
+      last = now;
+
+      layout();
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      fld.flush(sink);
+
+      fpsN++;
+      if (now - fpsT >= 500) {
+        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        fpsT = now;
+        fpsN = 0;
+      }
+      if ((hudTick++ & 7) === 0) {
+        $quads.textContent = fmt(count * 2);
+        $draws.textContent = "1";
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+      const [w, h] = sizeGL($canvas);
+      W = w;
+      H = h;
+      sink.resize(W, H);
+    }
+
+    return {
+      resize,
+      start() {
+        if (running) return;
+        running = true;
+        last = performance.now();
+        fpsT = last;
+        fpsN = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+      },
+    };
+  })();
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCENE 03 · DIRTY WINDOW (upload only what changed)
+  // ══════════════════════════════════════════════════════════════════════════
+  const dirty = (() => {
+    const $canvas = $("dirty-canvas"), $nogl = $("dirty-nogl");
+    const $pct = $("dirty-pct"), $fps = $("dirty-fps"), $cells = $("dirty-cells");
+    const $floats = $("dirty-floats"), $of = $("dirty-of"), $window = $("dirty-window"), $rest = $("dirty-rest");
+    const $win = $("dirty-win"), $winV = $("dirty-win-v"), $speed = $("dirty-speed"), $speedV = $("dirty-speed-v");
+
+    const gl = $canvas.getContext("webgl2", { antialias: false, alpha: true });
+    if (!gl) {
+      $nogl.setAttribute("data-active", "");
+      return {
+        resize() {
+        }, start() {
+        }, stop() {
+        },
+      };
+    }
+    gl.clearColor(0, 0, 0, 0);
+
+    const COLS = 60, ROWS = 34, TOTAL = COLS * ROWS;
+    const fld = createField({ capacity: TOTAL, stride: LAYOUT.QUAD });
+    const sink = createQuadSink(gl, { capacity: TOTAL });
+
+    let W = 1, H = 1, head = 0, WIN = 48, speed = 6, seeded = false;
+    let running = false, raf = 0, fpsT = performance.now(), fpsN = 0, hudTick = 0, lastFloats = 0;
+
+    function seed() {
+      const padX = W * 0.03, padY = H * 0.06, cw = (W - padX * 2) / COLS, ch = (H - padY * 2) / ROWS;
+      fld.reset();
+      for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
+        fld.push((d, b) => {
+          d[b] = padX + c * cw + cw / 2;
+          d[b + 1] = padY + r * ch + ch / 2;
+          d[b + 2] = cw * 0.82;
+          d[b + 3] = ch * 0.82;
+          d[b + 4] = 0;
+          d[b + 5] = 0.09;
+          d[b + 6] = 0.15;
+          d[b + 7] = 0.12;
+          d[b + 8] = 1.0;
+        });
+      }
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      fld.flush(sink);          // one full upload up front
+      fld.clearDirty();
+      seeded = true;
+    }
+
+    // recolor cell i in place (reads its existing pos/size, changes only color)
+    function paint(i, r, g, b) {
+      fld.set(i, (d, base) => {
+        const x = d[base], y = d[base + 1], w = d[base + 2], h = d[base + 3];
+        d[base] = x;
+        d[base + 1] = y;
+        d[base + 2] = w;
+        d[base + 3] = h;
+        d[base + 4] = 0;
+        d[base + 5] = r;
+        d[base + 6] = g;
+        d[base + 7] = b;
+        d[base + 8] = 1.0;
+      });
+    }
+
+    const controls = new AbortController();
+    $win.addEventListener("input", () => {
+      WIN = +$win.value;
+      $winV.textContent = WIN;
+    }, { signal: controls.signal });
+    $speed.addEventListener("input", () => {
+      speed = +$speed.value;
+      $speedV.textContent = speed;
+    }, { signal: controls.signal });
+
+    const tmp = new Float64Array(3);
+
+    function frame() {
+      if (!running) return;
+      if (!seeded) seed();
+
+      for (let s = 0; s < speed; s++) {
+        if (head > 0 && head - 1 < TOTAL) paint(head - 1, 0.09, 0.15, 0.12);   // trailing dims
+        for (let k = 0; k < WIN; k++) {
+          const idx = head + k;
+          if (idx >= TOTAL) break;
+          phosphorInto(tmp, 0, k / WIN);
+          paint(idx, tmp[0], tmp[1], tmp[2]);
+        }
+        head += 1;
+        if (head + WIN > TOTAL) {
+          head = 0;
+          seeded = false;
+          break;
+        }   // reseed next frame
+      }
+
+      const lo = fld.dirtyLo(), hi = fld.dirtyHi();
+      lastFloats = lo >= 0 ? (hi - lo + 1) * 9 : 0;
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      fld.flush(sink);            // ships only the dirty window
+
+      fpsN++;
+      const now = performance.now();
+      if (now - fpsT >= 500) {
+        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        fpsT = now;
+        fpsN = 0;
+      }
+      if ((hudTick++ & 7) === 0) {
+        const total = TOTAL * 9, pct = total ? (lastFloats / total * 100) : 0;
+        $cells.textContent = fmt(TOTAL);
+        $floats.textContent = fmt(lastFloats);
+        $pct.textContent = pct.toFixed(1) + "%";
+        $of.textContent = pct.toFixed(1) + "%";
+        $rest.textContent = "~" + (100 - pct).toFixed(0) + "%";
+        $window.textContent = lo >= 0 ? ("window " + lo + "–" + hi) : "window —";
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+      const [w, h] = sizeGL($canvas);
+      W = w;
+      H = h;
+      sink.resize(W, H);
+      seeded = false;
+    }
+
+    return {
+      resize,
+      start() {
+        if (running) return;
+        running = true;
+        fpsT = performance.now();
+        fpsN = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+      },
+    };
+  })();
+
+  // ─── tab switching: only the active scene runs ────────────────────────────
+  const scenes = { field, bars, dirty };
+  let current = "field";
+
+  function activate(tab) {
+    if (tab === current) return;
+    scenes[current].stop();
+    current = tab;
+    for (const b of $("tabs").querySelectorAll("button")) {
+      b.setAttribute("aria-current", b.dataset.tab === tab ? "true" : "false");
+    }
+    for (const s of document.querySelectorAll(".scene")) {
+      if (s.dataset.scene === tab) s.setAttribute("data-active", "");
+      else s.removeAttribute("data-active");
+    }
+    // let layout settle before measuring the newly-visible canvas
+    requestAnimationFrame(() => {
+      scenes[tab].resize();
+      scenes[tab].start();
+    });
+  }
+
+  $("tabs").addEventListener("click", (e) => {
+    const t = e.target.closest("button[data-tab]");
+    if (t) activate(t.dataset.tab);
+  });
+
+  window.addEventListener("resize", () => scenes[current].resize());
+  window.addEventListener("pagehide", () => {
+    field.stop();
+    bars.stop();
+    dirty.stop();
+  });
+
+  // boot the active scene
+  requestAnimationFrame(() => {
+    field.resize();
+    field.start();
+  });
+</script>
+</body>
+</html>

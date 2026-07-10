@@ -7,6 +7,7 @@
 [![npm downloads](https://img.shields.io/npm/dm/@zakkster/lite-gl?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-gl)
 [![npm total downloads](https://img.shields.io/npm/dt/@zakkster/lite-gl?style=for-the-badge&color=blue)](https://www.npmjs.com/package/@zakkster/lite-gl)
 [![lite-signal peer](https://img.shields.io/badge/peer-lite--signal-blue?style=for-the-badge)](https://github.com/PeshoVurtoleta/lite-signal)
+![Tree-Shakeable](https://img.shields.io/badge/tree--shakeable-yes-brightgreen)
 ![TypeScript](https://img.shields.io/badge/TypeScript-Types-informational)
 ![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg?style=for-the-badge)](https://opensource.org/licenses/MIT)
@@ -35,11 +36,13 @@ lite-gl is split so the valuable, novel half is verifiable:
 - **`@zakkster/lite-gl`** (the core) is **renderer-agnostic and fully tested**,
   including the 1M-point zero-GC claim. It manages the packed buffer, the dirty
   range, and the reactive projection.
-- **`@zakkster/lite-gl/backend`** is the **WebGL2 sink — browser-only.** Its GL call sequence is **unit-tested headlessly against a mock WebGL2
-  context** (compile/link, the one-time VBO sizing, the three instance attributes,
-  the dirty-window `bufferSubData`, and the `POINTS` draw); only the **real-GPU
-  rendering** needs a browser, since CI has no GPU. Swap it for a
-  WebGPU or canvas sink without touching the core.
+- **`@zakkster/lite-gl/backend`** is the **WebGL2 sink — browser-only.** Both the
+  `POINT` and `QUAD` sinks have their GL call sequence **unit-tested headlessly
+  against a mock WebGL2 context** (compile/link, the one-time VBO sizing, the
+  instance attributes + `vertexAttribDivisor`, the dirty-window `bufferSubData`, and
+  the `POINTS` / instanced `TRIANGLE_STRIP` draw); only the **real-GPU rendering**
+  needs a browser, since CI has no GPU. Swap it for a WebGPU or canvas sink without
+  touching the core.
 
 The honest line: the core and the backend's GL wiring are both tested; the pixels
 on a real GPU are yours to confirm in a browser.
@@ -141,9 +144,10 @@ is the whole point of this package.
   The **rendering** (shader compile, instanced draw, 60fps at 1M) is **browser-
   validated by you** — it cannot run headlessly, so the package makes no automated
   claim about it.
-- **v1 ships the POINT pipeline** (the chart case). Quads and lines use the same
-  core with an instanced base geometry + `vertexAttribDivisor`; deferred, sketched
-  in `GLBackend.js`.
+- **v1.1 ships the POINT and QUAD pipelines** — scatter / particles, plus bars,
+  sized/rotated markers, and heatmap cells. Both drive the same zero-GC core; `QUAD`
+  adds a static instanced unit-quad base geometry + `vertexAttribDivisor`. The
+  **LINE** pipeline is still deferred (same pattern, ready to implement).
 - **Re-projection is O(N):** a camera/data change re-projects all instances. That's
   cheap on CPU (a million simple writes is sub-millisecond); the pipeline stays
   allocation-free, which is what actually protects the frame budget.
@@ -173,10 +177,16 @@ interface Sink {
 }
 
 // backend (@zakkster/lite-gl/backend, browser-only)
-createPointSink(gl: WebGL2RenderingContext, { capacity }): {
-  upload; draw; resize(w, h); dispose; gl
-}
+createPointSink(gl: WebGL2RenderingContext, { capacity }): PointSink   // LAYOUT.POINT -> GL_POINTS
+createQuadSink(gl: WebGL2RenderingContext, { capacity }): QuadSink    // LAYOUT.QUAD  -> instanced TRIANGLE_STRIP
+
+// both sinks expose the same surface:
+//   upload(data, floatOffset, floatCount, instanceOffset, stride)
+//   draw(count); resize(w, h); onContextRestored(cb); isContextLost(); capacity; dispose; gl
 ```
+
+`QUAD` instances are `x, y, w, h, rot, r, g, b, a` (`LAYOUT.QUAD`, stride 9); positions
+and sizes are in **screen pixels** — do world→screen in `project`, same as points.
 
 ---
 
