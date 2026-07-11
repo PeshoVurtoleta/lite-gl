@@ -1,5 +1,36 @@
 # Changelog
 
+## [1.2.0] - 2026-07-11
+
+### Added
+- **LINE pipeline** (`createLineSink`): instanced screen-space thick segments,
+  expanded in the vertex shader from `p0`/`p1` + width.
+  - Layout: `x0, y0, x1, y1, width, r, g, b, a` (stride 9, matches `LAYOUT.LINE`).
+  - Butt caps only (ends cut perpendicular at the endpoints); a polyline is N−1
+    independent segments. Round joins deferred to 1.3 if seams show at chart widths.
+  - `capacity` is the number of **segments**.
+  - Same zero-GC dirty-window upload + context-loss recovery as POINT/QUAD; one
+    `drawArraysInstanced(TRIANGLE_STRIP, 0, 4, count)` call for the whole set.
+  - Unlocks high-performance line charts, multi-series lines, step lines, and area
+    outlines in `lite-charts-gl`, past the Canvas2D ceiling.
+- Demo: new **Lorenz Ribbon** scene — a Lorenz attractor traced as a glowing thick
+  polyline through `createLineSink`, with the same reactive camera (drag / zoom /
+  auto-rotate) and additive phosphor glow as the Attractor Field.
+
+### Changed
+- Backend now exports `createLineSink`.
+- Type definitions (`GLBackend.d.ts`), README, `llms.txt`, and the top-level comment
+  updated for the LINE pipeline. The core (`createField` / `reactiveField`) was
+  already stride-generic — no core changes needed.
+
+### Tested
+- `createLineSink` GL wiring is unit-tested headlessly against the mock WebGL2 context
+  (`test/GLBackend_test.mjs`): program link, static base VBO + dynamic instance VBO,
+  the five attributes + `vertexAttribDivisor`, dirty-window `bufferSubData`, the
+  `drawArraysInstanced(TRIANGLE_STRIP)` draw, the capacity guard, teardown, and an
+  end-to-end pass driving the core through the line sink.
+- `npm test` now runs 8 core + 21 backend = 29 checks.
+
 ## [1.1.0] - 2026-07-10
 
 ### Added

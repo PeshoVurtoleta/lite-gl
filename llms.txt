@@ -29,9 +29,10 @@ The GPU lives behind the `sink` interface:
 - The CORE (buffer, dirty batching, reactive projection, 1M zero-GC) is verified.
 - The RENDERING (shader compile, instanced draw, 60fps at 1M) is browser-validated
   by a smoke test (manual + Playwright) -- it cannot run under node:test.
-- v1.1 ships the POINT and QUAD pipelines (scatter/particles + bars, sized/rotated
-  markers, heatmap cells). Both drive the same core; QUAD adds a static instanced
-  unit-quad base geometry + vertexAttribDivisor. LINE uses the same pattern; deferred.
+- v1.2 ships all three pipelines: POINT (scatter/particles), QUAD (bars, sized/rotated
+  markers, heatmap cells), and LINE (thick polylines for line charts). All drive the
+  same core via a static instanced base + vertexAttribDivisor. LINE uses butt caps only
+  in 1.2 (perpendicular ends; a polyline is N-1 independent segments); round joins 1.3.
 - Re-projection is O(N): a camera/data change re-projects all instances. That is
   cheap on CPU; allocation is the enemy, and the pipeline is allocation-free.
 
@@ -63,6 +64,14 @@ The GPU lives behind the `sink` interface:
     (loc 0, divisor 0) + per-instance attrs (loc 1..4, divisor 1) via vertexAttribDivisor.
     Same dirty-window upload, capacity guard, and context-loss recovery as points.
     Unlocks bars, sized/rotated scatter markers, and heatmap cells.
+- createLineSink(gl, { capacity }) -> same surface as createPointSink
+    Renders a LAYOUT.LINE field (x0, y0, x1, y1, width, r, g, b, a; stride 9) as instanced
+    butt-capped thick segments. A static 4-vertex (t,s) base descriptor is expanded into a
+    screen-space quad in the vertex shader from p0/p1 + width (perpendicular offset); per-
+    instance attrs (loc 1..4, divisor 1). One drawArraysInstanced(TRIANGLE_STRIP) call.
+    `capacity` is the number of SEGMENTS (a polyline of N points is N-1 segments). Endpoints
+    and width in SCREEN PIXELS. Butt caps only in 1.2; round joins deferred to 1.3. Unlocks
+    high-performance line charts, multi-series lines, step lines, and area outlines.
 
 ### Context loss (long-running overlays)
 
@@ -76,8 +85,8 @@ the hook, so the image returns on its own. isContextLost() reflects the state.
 ### Coverage
 
 No headless WebGL2 exists, so the backend has two coverage layers. (1) node:test
-against a MOCK WebGL2 context (test/GLBackend_test.mjs): the GL call sequence of both
-the POINT and QUAD sinks -- compile/link, one-time VBO sizing, instance attributes +
+against a MOCK WebGL2 context (test/GLBackend_test.mjs): the GL call sequence of the
+POINT, QUAD, and LINE sinks -- compile/link, one-time VBO sizing, instance attributes +
 vertexAttribDivisor, dirty-window bufferSubData, the drawArrays / drawArraysInstanced
 call, capacity guard, and teardown -- plus an end-to-end pass driving the GL.js core
 through each sink. (2) A browser smoke test for the real GPU pixels: test/smoke.html

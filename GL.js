@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-gl v1.1.0 -- signal-native instanced primitive renderer.
+ * @zakkster/lite-gl v1.2.0 -- signal-native instanced primitive renderer.
  * -----------------------------------------------------------------------------
  * NOT a Pixi/Three competitor. A narrow, zero-GC engine for ONE thing: project a
  * large set of instanced primitives (points / quads / lines) from reactive inputs

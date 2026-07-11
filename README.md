@@ -144,10 +144,12 @@ is the whole point of this package.
   The **rendering** (shader compile, instanced draw, 60fps at 1M) is **browser-
   validated by you** — it cannot run headlessly, so the package makes no automated
   claim about it.
-- **v1.1 ships the POINT and QUAD pipelines** — scatter / particles, plus bars,
-  sized/rotated markers, and heatmap cells. Both drive the same zero-GC core; `QUAD`
-  adds a static instanced unit-quad base geometry + `vertexAttribDivisor`. The
-  **LINE** pipeline is still deferred (same pattern, ready to implement).
+- **v1.2 ships all three pipelines — POINT, QUAD, and LINE.** Scatter / particles;
+  bars, sized/rotated markers, and heatmap cells; and now thick polylines for line
+  charts. All three drive the same zero-GC core via a static instanced base geometry
+  + `vertexAttribDivisor`. `LINE` uses **butt caps** only in 1.2 (ends cut
+  perpendicular; a polyline is N−1 independent segments); round joins are a 1.3
+  follow-up if seams show at chart widths.
 - **Re-projection is O(N):** a camera/data change re-projects all instances. That's
   cheap on CPU (a million simple writes is sub-millisecond); the pipeline stays
   allocation-free, which is what actually protects the frame budget.
@@ -179,14 +181,19 @@ interface Sink {
 // backend (@zakkster/lite-gl/backend, browser-only)
 createPointSink(gl: WebGL2RenderingContext, { capacity }): PointSink   // LAYOUT.POINT -> GL_POINTS
 createQuadSink(gl: WebGL2RenderingContext, { capacity }): QuadSink    // LAYOUT.QUAD  -> instanced TRIANGLE_STRIP
+createLineSink(gl: WebGL2RenderingContext, { capacity }): LineSink    // LAYOUT.LINE  -> instanced TRIANGLE_STRIP (thick segments)
 
-// both sinks expose the same surface:
+// all three sinks expose the same surface:
 //   upload(data, floatOffset, floatCount, instanceOffset, stride)
 //   draw(count); resize(w, h); onContextRestored(cb); isContextLost(); capacity; dispose; gl
 ```
 
-`QUAD` instances are `x, y, w, h, rot, r, g, b, a` (`LAYOUT.QUAD`, stride 9); positions
-and sizes are in **screen pixels** — do world→screen in `project`, same as points.
+`QUAD` instances are `x, y, w, h, rot, r, g, b, a` (`LAYOUT.QUAD`, stride 9); `LINE`
+instances are `x0, y0, x1, y1, width, r, g, b, a` (`LAYOUT.LINE`, stride 9) — the
+endpoints and width are in **screen pixels**, expanded to a thick quad in the vertex
+shader. Everything is screen-space — do world→screen in `project`, same as points.
+`capacity` for a line sink is the number of **segments** (a polyline of N points is
+N−1 segments).
 
 ---
 

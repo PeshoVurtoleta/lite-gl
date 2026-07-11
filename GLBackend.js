@@ -82,6 +82,41 @@ void main() {
   outColor = v_color;
 }`;
 
+const LINE_VS = `#version 300 es
+layout(location=0) in vec2 a_ts;      // .x=t (0..1 along segment), .y=s (-1 or +1 side)
+layout(location=1) in vec2 a_p0;      // instance start (screen px)
+layout(location=2) in vec2 a_p1;      // instance end   (screen px)
+layout(location=3) in float a_width;  // thickness in pixels
+layout(location=4) in vec4 a_color;
+uniform vec2 u_resolution;
+out vec4 v_color;
+
+void main() {
+  float t = a_ts.x;
+  float s = a_ts.y;
+
+  vec2 dir = a_p1 - a_p0;
+  float len = length(dir);
+  vec2 unitDir = (len > 0.0001) ? (dir / len) : vec2(1.0, 0.0);
+  vec2 perp = vec2(-unitDir.y, unitDir.x);   // rotate 90 deg for consistent sides
+
+  vec2 base = mix(a_p0, a_p1, t);
+  vec2 offset = s * (a_width * 0.5) * perp;
+
+  vec2 world = base + offset;
+  vec2 clip = (world / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_color = a_color;
+}`;
+
+const LINE_FS = `#version 300 es
+precision mediump float;
+in vec4 v_color;
+out vec4 outColor;
+void main() {
+  outColor = v_color;
+}`;
+
 function compile(gl, type, src) {
     const sh = gl.createShader(type);
     gl.shaderSource(sh, src);
@@ -318,6 +353,148 @@ export function createQuadSink(gl, opts) {
             gl.bufferSubData(gl.ARRAY_BUFFER, floatOffset * 4, data, floatOffset, floatCount);
         },
         /** One instanced draw call for all `count` quads. */
+        draw(count) {
+            if (lost || count <= 0) return;
+            gl.useProgram(program);
+            gl.uniform2f(uResolution, resW, resH);
+            gl.bindVertexArray(vao);
+            gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+            gl.bindVertexArray(null);
+        },
+        onContextRestored(cb) {
+            restoreCbs.push(cb);
+            return () => { const i = restoreCbs.indexOf(cb); if (i >= 0) restoreCbs.splice(i, 1); };
+        },
+        isContextLost() { return lost; },
+        dispose() {
+            if (canListen) {
+                canvas.removeEventListener("webglcontextlost", onLost, false);
+                canvas.removeEventListener("webglcontextrestored", onRestored, false);
+            }
+            if (baseVbo) gl.deleteBuffer(baseVbo);
+            if (instanceVbo) gl.deleteBuffer(instanceVbo);
+            if (vao) gl.deleteVertexArray(vao);
+            if (program) gl.deleteProgram(program);
+        },
+    };
+}
+
+const LINE_STRIDE = 9;
+const LINE_STRIDE_BYTES = LINE_STRIDE * 4;
+
+// Static base geometry: 4 corner descriptors (t along segment, s = which side).
+const UNIT_LINE = new Float32Array([
+    0, -1,   // t=0 (p0), s=-1
+    0,  1,   // t=0 (p0), s=+1
+    1, -1,   // t=1 (p1), s=-1
+    1,  1    // t=1 (p1), s=+1
+]);
+
+/**
+ * createLineSink: instanced thick-segment pipeline (v1.2, browser-only).
+ * Each instance is one butt-capped thick line segment (x0,y0,x1,y1,width,rgba),
+ * matching LAYOUT.LINE (stride 9). A static 4-vertex base (t,s descriptors) is
+ * expanded into a screen-space quad in the vertex shader from p0/p1 + width;
+ * per-instance attributes use vertexAttribDivisor(1). One instanced
+ * TRIANGLE_STRIP draw for the whole set. Same dirty-window upload and
+ * context-loss discipline as POINT/QUAD.
+ *
+ * Endpoints and width are in screen pixels -- do world->screen in `project`.
+ * Butt caps only in 1.2 (ends cut perpendicular at p0/p1); a polyline is N-1
+ * independent segments. Round joins are deferred to 1.3.
+ */
+export function createLineSink(gl, opts) {
+    const capacity = opts.capacity;
+    const canvas = gl.canvas;
+
+    let program = null, uResolution = null, vao = null;
+    let baseVbo = null, instanceVbo = null;
+    let resW = gl.drawingBufferWidth, resH = gl.drawingBufferHeight;
+    let lost = false;
+    const restoreCbs = [];
+
+    function createResources() {
+        program = link(gl, LINE_VS, LINE_FS);
+        uResolution = gl.getUniformLocation(program, "u_resolution");
+
+        vao = gl.createVertexArray();
+        baseVbo = gl.createBuffer();
+        instanceVbo = gl.createBuffer();
+
+        gl.bindVertexArray(vao);
+
+        // Static base geometry (t,s corner descriptors). Divisor 0 (default).
+        gl.bindBuffer(gl.ARRAY_BUFFER, baseVbo);
+        gl.bufferData(gl.ARRAY_BUFFER, UNIT_LINE, gl.STATIC_DRAW);
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+        // vertexAttribDivisor(0, 0) is default -- advances per-vertex
+
+        // Per-instance data VBO (dirty uploads go here). Divisor 1 for all attrs.
+        gl.bindBuffer(gl.ARRAY_BUFFER, instanceVbo);
+        gl.bufferData(gl.ARRAY_BUFFER, capacity * LINE_STRIDE_BYTES, gl.DYNAMIC_DRAW);
+
+        // loc1: a_p0 (vec2)
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 2, gl.FLOAT, false, LINE_STRIDE_BYTES, 0);
+        gl.vertexAttribDivisor(1, 1);
+
+        // loc2: a_p1 (vec2)
+        gl.enableVertexAttribArray(2);
+        gl.vertexAttribPointer(2, 2, gl.FLOAT, false, LINE_STRIDE_BYTES, 8);
+        gl.vertexAttribDivisor(2, 1);
+
+        // loc3: a_width (float)
+        gl.enableVertexAttribArray(3);
+        gl.vertexAttribPointer(3, 1, gl.FLOAT, false, LINE_STRIDE_BYTES, 16);
+        gl.vertexAttribDivisor(3, 1);
+
+        // loc4: a_color (vec4)
+        gl.enableVertexAttribArray(4);
+        gl.vertexAttribPointer(4, 4, gl.FLOAT, false, LINE_STRIDE_BYTES, 20);
+        gl.vertexAttribDivisor(4, 1);
+
+        gl.bindVertexArray(null);
+        gl.viewport(0, 0, resW, resH);
+    }
+
+    function onLost(e) {
+        e.preventDefault();
+        lost = true;
+    }
+    function onRestored() {
+        createResources();
+        lost = false;
+        for (let i = 0; i < restoreCbs.length; i++) restoreCbs[i]();
+    }
+
+    const canListen = canvas && typeof canvas.addEventListener === "function";
+    if (canListen) {
+        canvas.addEventListener("webglcontextlost", onLost, false);
+        canvas.addEventListener("webglcontextrestored", onRestored, false);
+    }
+
+    createResources();
+
+    return {
+        gl,
+        capacity,
+        /** Match the viewport (call on canvas resize). */
+        resize(w, h) {
+            resW = w; resH = h;
+            if (!lost) gl.viewport(0, 0, w, h);
+        },
+        /** Upload only the dirty float window into the *instance* VBO. */
+        upload(data, floatOffset, floatCount) {
+            if (lost) return;
+            if (floatOffset + floatCount > capacity * LINE_STRIDE) {
+                throw new RangeError("lite-gl: line upload exceeds sink capacity (" + capacity + " lines). "
+                    + "Size createLineSink({ capacity }) to your field's maximum count.");
+            }
+            gl.bindBuffer(gl.ARRAY_BUFFER, instanceVbo);
+            gl.bufferSubData(gl.ARRAY_BUFFER, floatOffset * 4, data, floatOffset, floatCount);
+        },
+        /** One instanced draw call for all `count` segments. */
         draw(count) {
             if (lost || count <= 0) return;
             gl.useProgram(program);

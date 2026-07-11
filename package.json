@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-gl",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Signal-native instanced primitive renderer: project ~1M points/quads/lines from reactive inputs, upload only what changed, draw in one instanced call. Zero-GC core (renderer-agnostic, tested) + a browser WebGL2 backend. Built for reactive charts at 1M points, not as a Pixi competitor.",
   "type": "module",
   "main": "./GL.js",

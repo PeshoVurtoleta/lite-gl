@@ -20,3 +20,17 @@ export interface QuadSink extends Sink {
 }
 
 export function createQuadSink(gl: WebGL2RenderingContext, opts: { capacity: number }): QuadSink;
+
+/** A WebGL2 instanced thick-line sink (v1.2, browser-only).
+ * Renders LAYOUT.LINE fields (x0,y0,x1,y1,width,rgba) as butt-capped screen-space
+ * segment quads expanded in the vertex shader from p0/p1 + width. One instanced
+ * TRIANGLE_STRIP draw call. Unlocks high-performance line charts, multi-series
+ * lines, step lines, and area outlines.
+ */
+export interface LineSink extends Sink {
+    gl: WebGL2RenderingContext;
+    resize(w: number, h: number): void;
+    dispose(): void;
+}
+
+export function createLineSink(gl: WebGL2RenderingContext, opts: { capacity: number }): LineSink;

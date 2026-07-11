@@ -475,15 +475,16 @@
         <div class="brand">
             <span class="mark">◐</span>
             <span class="pkg">@zakkster/lite-gl</span>
-            <span class="ver">v1.1.0</span>
+            <span class="ver">v1.2.0</span>
         </div>
         <div class="tagline"><span class="dot"></span>oscilloscope · instanced GPU renderer</div>
     </header>
 
     <nav class="tabs" id="tabs">
         <button data-tab="field" aria-current="true"><span class="scene-num">01</span>Attractor Field</button>
-        <button data-tab="bars"><span class="scene-num">02</span>Quad Spectrum</button>
-        <button data-tab="dirty"><span class="scene-num">03</span>Dirty Window</button>
+        <button data-tab="lorenz"><span class="scene-num">02</span>Lorenz Ribbon</button>
+        <button data-tab="bars"><span class="scene-num">03</span>Quad Spectrum</button>
+        <button data-tab="dirty"><span class="scene-num">04</span>Dirty Window</button>
     </nav>
 
     <main>
@@ -554,7 +555,79 @@
             </aside>
         </section>
 
-        <!-- ─── SCENE 02: BARS (quads) ─── -->
+        <!-- ─── SCENE 02: LORENZ RIBBON (lines) ─── -->
+        <section class="scene" data-scene="lorenz">
+            <div class="stage" id="lorenz-stage">
+                <canvas id="lorenz-canvas"></canvas>
+                <div class="no-webgl" id="lorenz-nogl">WebGL2 unavailable in this browser.</div>
+                <div class="stage-overlay tl">
+                    <span class="label">lorenz attractor · thick LINE segments</span>
+                </div>
+                <div class="stage-overlay tr">
+                    <span class="label">segments on gpu</span>
+                    <span class="big magenta" id="lorenz-count">0</span>
+                </div>
+                <div class="stage-overlay bl">
+                    <div class="legend">
+                        <div class="chip"><span class="swatch" style="--sw: var(--green)"></span>start</div>
+                        <div class="chip"><span class="swatch" style="--sw: var(--cyan)"></span>mid</div>
+                        <div class="chip"><span class="swatch" style="--sw: var(--magenta)"></span>tail</div>
+                    </div>
+                </div>
+                <div class="stage-overlay br">
+                    <span class="label">drag to pan · scroll to zoom</span>
+                </div>
+            </div>
+            <aside class="panel">
+                <div class="panel-head">scene 02 · reactive polyline</div>
+                <section>
+                    <p class="help-line">
+                        One continuous trajectory traced as thick <code>createLineSink</code> segments —
+                        each expanded to a screen-space quad in the vertex shader from <code>p0</code>/<code>p1</code>
+                        + width. The same camera <code>signal</code> re-projects <strong>every segment</strong>
+                        in one upload + <strong>one instanced draw</strong>, allocation-free.
+                    </p>
+                    <div class="btn-row">
+                        <button class="btn primary" id="lorenz-rotate" aria-pressed="true">◐ auto-rotate</button>
+                        <button class="btn" id="lorenz-reset">reset view</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>Load</h3>
+                    <div class="field">
+                        <label>segments <span class="field-value" id="lorenz-n-v">160K</span></label>
+                        <input type="range" id="lorenz-n" min="20000" max="500000" step="20000" value="160000">
+                    </div>
+                    <div class="field">
+                        <label>width <span class="field-value" id="lorenz-w-v">2.0px</span></label>
+                        <input type="range" id="lorenz-w" min="1" max="6" step="0.5" value="2">
+                    </div>
+                </section>
+                <section>
+                    <h3>Telemetry</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">fps</div>
+                            <div class="v green" id="lorenz-fps">60</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">redraws</div>
+                            <div class="v cyan" id="lorenz-redraws">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">zoom</div>
+                            <div class="v amber" id="lorenz-zoom">1.00×</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">draw calls</div>
+                            <div class="v magenta" id="lorenz-draws">1</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
+
+        <!-- ─── SCENE 03: BARS (quads) ─── -->
         <section class="scene" data-scene="bars">
             <div class="stage" id="bars-stage">
                 <canvas id="bars-canvas"></canvas>
@@ -572,7 +645,7 @@
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 02 · quad spectrum</div>
+                <div class="panel-head">scene 03 · quad spectrum</div>
                 <section>
                     <p class="help-line">
                         <code>createQuadSink</code> renders sized + rotated quads via <code>vertexAttribDivisor</code>.
@@ -620,7 +693,7 @@
                 <div class="stage-overlay br"><span class="label" id="dirty-window">window —</span></div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 03 · upload only what changed</div>
+                <div class="panel-head">scene 04 · upload only what changed</div>
                 <section>
                     <p class="help-line">
                         The bright band is the only thing that changed this frame. The whole grid is drawn,
@@ -675,13 +748,12 @@
   }
 }
 
-
 </script>
 
 <script type="module">
   import { signal } from "@zakkster/lite-signal";
   import { createField, reactiveField, LAYOUT } from "@zakkster/lite-gl";
-  import { createPointSink, createQuadSink } from "@zakkster/lite-gl/backend";
+  import { createPointSink, createQuadSink, createLineSink } from "@zakkster/lite-gl/backend";
 
   // ─── hoisted consts + cached lookups (zero GC) ───────────────────────────
   const TAU = Math.PI * 2;
@@ -723,6 +795,39 @@
       wy[i] = y;
     }
     return { wx, wy };
+  }
+
+  // Lorenz attractor trajectory (3D), centered; returns world arrays + max extent.
+  function genLorenz(N, dt) {
+    const wx = new Float64Array(N), wy = new Float64Array(N), wz = new Float64Array(N);
+    let x = 0.01, y = 0, z = 0;
+    const s = 10, r = 28, b = 8 / 3;
+    for (let i = 0; i < N; i++) {
+      const dx = s * (y - x), dy = x * (r - z) - y, dz = x * y - b * z;
+      x += dx * dt;
+      y += dy * dt;
+      z += dz * dt;
+      wx[i] = x;
+      wy[i] = y;
+      wz[i] = z;
+    }
+    let mx = 0, my = 0, mz = 0;
+    for (let i = 0; i < N; i++) {
+      mx += wx[i];
+      my += wy[i];
+      mz += wz[i];
+    }
+    mx /= N;
+    my /= N;
+    mz /= N;
+    let ext = 0;
+    for (let i = 0; i < N; i++) {
+      wx[i] -= mx;
+      wy[i] -= my;
+      wz[i] -= mz;
+      ext = Math.max(ext, Math.abs(wx[i]), Math.abs(wy[i]), Math.abs(wz[i]));
+    }
+    return { wx, wy, wz, ext };
   }
 
   // phosphor ramp green -> cyan -> magenta, writes rgb (0..1) at out[o..o+2]
@@ -910,7 +1015,184 @@
   })();
 
   // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 02 · QUAD SPECTRUM (bars + rotated caps)
+  // SCENE 02 · LORENZ RIBBON (lines, signal-driven camera)
+  // ══════════════════════════════════════════════════════════════════════════
+  const lorenz = (() => {
+    const $canvas = $("lorenz-canvas"), $nogl = $("lorenz-nogl");
+    const $count = $("lorenz-count"), $fps = $("lorenz-fps"), $redraws = $("lorenz-redraws");
+    const $zoomV = $("lorenz-zoom"), $draws = $("lorenz-draws");
+    const $rotate = $("lorenz-rotate"), $reset = $("lorenz-reset");
+    const $n = $("lorenz-n"), $nV = $("lorenz-n-v"), $w = $("lorenz-w"), $wV = $("lorenz-w-v");
+
+    const gl = $canvas.getContext("webgl2", { antialias: false, alpha: true, preserveDrawingBuffer: true });
+    if (!gl) {
+      $nogl.setAttribute("data-active", "");
+      return {
+        resize() {
+        }, start() {
+        }, stop() {
+        },
+      };
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive phosphor glow
+
+    const LORENZ_N = 500_000;             // trajectory points; segments = points - 1
+    const MAX_SEG = LORENZ_N - 1;
+    const { wx, wy, wz, ext } = genLorenz(LORENZ_N, 0.005);
+    const fld = createField({ capacity: MAX_SEG, stride: LAYOUT.LINE });
+    const sink = createLineSink(gl, { capacity: MAX_SEG });
+    const sxA = new Float64Array(LORENZ_N), syA = new Float64Array(LORENZ_N);
+
+    // bake width + colour once for every segment (project only rewrites endpoints)
+    let baseWidth = 2;
+    const data = fld.data;
+    for (let i = 0; i < MAX_SEG; i++) {
+      const b = i * 9;
+      data[b + 4] = baseWidth * DPR;
+      phosphorInto(data, b + 5, i / MAX_SEG);
+      data[b + 8] = 0.5;                   // alpha (additive)
+    }
+
+    let W = 1, H = 1, scale = 1;
+    const camX = signal(0), camY = signal(0), zoom = signal(1), phase = signal(0.6);
+
+    const project = (f) => {
+      const z = zoom(), cx = camX(), cy = camY(), ph = phase();
+      const sc = scale * z, cosP = Math.cos(ph), sinP = Math.sin(ph);
+      const hw = W * 0.5, hh = H * 0.5, d = f.data, n = f.count;
+      for (let i = 0; i <= n; i++) {
+        const rx = wx[i] * cosP - wy[i] * sinP;   // spin around vertical axis
+        sxA[i] = hw + rx * sc - cx;
+        syA[i] = hh - wz[i] * sc - cy;            // z is up
+      }
+      for (let i = 0; i < n; i++) {
+        const b = i * 9;
+        d[b] = sxA[i];
+        d[b + 1] = syA[i];
+        d[b + 2] = sxA[i + 1];
+        d[b + 3] = syA[i + 1];
+      }
+      f.touchAll();
+    };
+    const handle = reactiveField(fld, { manual: true, sink, project });
+
+    let dragging = false, dragDX = 0, dragDY = 0, lastX = 0, lastY = 0, autoRot = true;
+    let redraws = 0, running = false, raf = 0, t0 = performance.now();
+    let fpsT = t0, fpsN = 0, hudTick = 0;
+
+    const controls = new AbortController();
+    const sig = controls.signal;
+    $canvas.addEventListener("pointerdown", (e) => {
+      dragging = true;
+      lastX = e.clientX;
+      lastY = e.clientY;
+      $canvas.setPointerCapture(e.pointerId);
+    }, { signal: sig });
+    $canvas.addEventListener("pointermove", (e) => {
+      if (!dragging) return;
+      dragDX += e.clientX - lastX;
+      dragDY += e.clientY - lastY;
+      lastX = e.clientX;
+      lastY = e.clientY;
+    }, { signal: sig });
+    $canvas.addEventListener("pointerup", (e) => {
+      dragging = false;
+      if ($canvas.hasPointerCapture(e.pointerId)) $canvas.releasePointerCapture(e.pointerId);
+    }, { signal: sig });
+    $canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      zoom.set(clamp(zoom() * (e.deltaY < 0 ? 1.12 : 0.893), 0.25, 14));
+    }, { signal: sig, passive: false });
+
+    $rotate.addEventListener("click", () => {
+      autoRot = !autoRot;
+      $rotate.setAttribute("aria-pressed", autoRot ? "true" : "false");
+    }, { signal: sig });
+    $reset.addEventListener("click", () => {
+      camX.set(0);
+      camY.set(0);
+      zoom.set(1);
+      phase.set(0.6);
+    }, { signal: sig });
+    $n.addEventListener("input", () => {
+      const n = +$n.value;
+      $nV.textContent = fmt(n);
+      fld.setCount(n);
+      project(fld);
+    }, { signal: sig });
+    $w.addEventListener("input", () => {
+      baseWidth = +$w.value;
+      $wV.textContent = baseWidth.toFixed(1) + "px";
+      const wpx = baseWidth * DPR, n = fld.count, d = fld.data;
+      for (let i = 0; i < n; i++) d[i * 9 + 4] = wpx;
+      fld.touchAll();                       // width changed -> redraw next frame
+    }, { signal: sig });
+
+    fld.setCount(160_000);
+    project(fld);
+
+    function frame() {
+      if (!running) return;
+      if (dragDX || dragDY) {
+        camX.set(camX() - dragDX * DPR);
+        camY.set(camY() - dragDY * DPR);
+        dragDX = 0;
+        dragDY = 0;
+      }
+      if (autoRot) phase.set(0.6 + (performance.now() - t0) * 0.00012);
+
+      if (fld.dirtyLo() >= 0) {
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        handle.frame();          // upload dirty range + one instanced draw
+        redraws++;
+      }
+
+      fpsN++;
+      const now = performance.now();
+      if (now - fpsT >= 500) {
+        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        fpsT = now;
+        fpsN = 0;
+      }
+      if ((hudTick++ & 7) === 0) {
+        $count.textContent = fmt(fld.count);
+        $redraws.textContent = fmt(redraws);
+        $zoomV.textContent = zoom().toFixed(2) + "×";
+        $draws.textContent = "1";
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+      const [w, h] = sizeGL($canvas);
+      W = w;
+      H = h;
+      scale = Math.min(W, H) / (ext * 1.1);
+      sink.resize(W, H);
+      project(fld);
+    }
+
+    return {
+      resize,
+      start() {
+        if (running) return;
+        running = true;
+        t0 = performance.now();
+        fpsT = t0;
+        fpsN = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+      },
+    };
+  })();
+
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCENE 03 · QUAD SPECTRUM (bars + rotated caps)
   // ══════════════════════════════════════════════════════════════════════════
   const bars = (() => {
     const $canvas = $("bars-canvas"), $nogl = $("bars-nogl");
@@ -1030,7 +1312,7 @@
   })();
 
   // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 03 · DIRTY WINDOW (upload only what changed)
+  // SCENE 04 · DIRTY WINDOW (upload only what changed)
   // ══════════════════════════════════════════════════════════════════════════
   const dirty = (() => {
     const $canvas = $("dirty-canvas"), $nogl = $("dirty-nogl");
@@ -1059,40 +1341,37 @@
 
     function seed() {
       const padX = W * 0.03, padY = H * 0.06, cw = (W - padX * 2) / COLS, ch = (H - padY * 2) / ROWS;
-      fld.reset();
+      const d = fld.data;
+      let base = 0;
       for (let r = 0; r < ROWS; r++) for (let c = 0; c < COLS; c++) {
-        fld.push((d, b) => {
-          d[b] = padX + c * cw + cw / 2;
-          d[b + 1] = padY + r * ch + ch / 2;
-          d[b + 2] = cw * 0.82;
-          d[b + 3] = ch * 0.82;
-          d[b + 4] = 0;
-          d[b + 5] = 0.09;
-          d[b + 6] = 0.15;
-          d[b + 7] = 0.12;
-          d[b + 8] = 1.0;
-        });
+        d[base] = padX + c * cw + cw / 2;
+        d[base + 1] = padY + r * ch + ch / 2;
+        d[base + 2] = cw * 0.82;
+        d[base + 3] = ch * 0.82;
+        d[base + 4] = 0;
+        d[base + 5] = 0.09;
+        d[base + 6] = 0.15;
+        d[base + 7] = 0.12;
+        d[base + 8] = 1.0;
+        base += 9;
       }
+      fld.setCount(TOTAL);       // activate all cells (marks the full range dirty)
       gl.clear(gl.COLOR_BUFFER_BIT);
-      fld.flush(sink);          // one full upload up front
+      fld.flush(sink);           // one full upload up front
       fld.clearDirty();
       seeded = true;
     }
 
-    // recolor cell i in place (reads its existing pos/size, changes only color)
+    // Recolour cell i in place: overwrite only rot + colour, then mark it dirty.
+    // Writes fld.data directly (no per-call closure) -- x,y,w,h stay as seeded.
     function paint(i, r, g, b) {
-      fld.set(i, (d, base) => {
-        const x = d[base], y = d[base + 1], w = d[base + 2], h = d[base + 3];
-        d[base] = x;
-        d[base + 1] = y;
-        d[base + 2] = w;
-        d[base + 3] = h;
-        d[base + 4] = 0;
-        d[base + 5] = r;
-        d[base + 6] = g;
-        d[base + 7] = b;
-        d[base + 8] = 1.0;
-      });
+      const d = fld.data, base = i * 9;   // LAYOUT.QUAD stride
+      d[base + 4] = 0;
+      d[base + 5] = r;
+      d[base + 6] = g;
+      d[base + 7] = b;
+      d[base + 8] = 1.0;
+      fld.touch(i);                       // extend the dirty range to include i
     }
 
     const controls = new AbortController();
@@ -1176,7 +1455,7 @@
   })();
 
   // ─── tab switching: only the active scene runs ────────────────────────────
-  const scenes = { field, bars, dirty };
+  const scenes = { field, lorenz, bars, dirty };
   let current = "field";
 
   function activate(tab) {
@@ -1205,6 +1484,7 @@
   window.addEventListener("resize", () => scenes[current].resize());
   window.addEventListener("pagehide", () => {
     field.stop();
+    lorenz.stop();
     bars.stop();
     dirty.stop();
   });
