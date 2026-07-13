@@ -1,5 +1,51 @@
 # Changelog
 
+## [1.3.0] - 2026-07-11
+
+### Added
+- **Shared program cache**: N sinks of the same primitive type share one linked program.
+  The first sink of a type compiles + links; the rest reuse it.
+  - Cached **per GL context** — a `WebGLProgram` belongs to the context that created it,
+    and a page can hold several contexts (the demo has one per scene).
+  - **Refcounted**: `dispose()`ing one sink can no longer delete a program another sink
+    is still using. The program is deleted when the last ref is released.
+  - A lost context drops the cache so programs relink on restore.
+- **Scissor / viewport regions**: `setScissor(x, y, w, h)` + `clearScissor()` on every
+  sink, for multi-pane charts in a single context with no extra framebuffers.
+  `x, y` are top-left origin in device px (GL's bottom-left origin is flipped internally).
+- **ID-buffer picking**: `pick(x, y, count?)` on every sink → instance index, or `-1`.
+  - Renders one offscreen ID pass (each instance flat-shaded with its index, 24-bit
+    little-endian RGB) and reads back a single pixel. No CPU hit-testing, so hover works
+    at 1M instances.
+  - Defaults to the count last passed to `draw()`. Honours the sink's scissor, so a hover
+    cannot hit a neighbouring pane.
+  - Saves and restores the bound framebuffer, clear colour and blend state — **blending is
+    disabled during the ID pass** (ids are bit patterns; blending them corrupts the readback).
+  - Costs one extra draw **per call** — throttle it to `pointermove`, never the frame loop.
+  - `PICK_MAX_ID` (`0xFFFFFE`) exported: white is reserved as the miss value.
+- Demo: new **Split Scope** scene — one canvas, one context, three fields, two scissor panes
+  (Lorenz lines | attractor points), with live GPU hover picking and a highlight marker.
+
+### Changed
+- Backend exports `PICK_MAX_ID`; every sink gains `setScissor` / `clearScissor` / `pick`.
+- `GLBackend.d.ts` now factors the common surface into a shared `GLSink` interface.
+- README, `llms.txt`, and the top-level comment updated. No core changes.
+
+### Fixed
+- The pick fragment shader declares `precision highp int`. The default integer precision in
+  a fragment shader is `mediump` (only guaranteed 16 bits), which would truncate any id
+  above 65535.
+
+### Tested
+- 9 new backend tests: shared program cache (N sinks → 1 `linkProgram`), per-context
+  isolation, refcounted dispose, scissor y-flip + no leaked state, pick decode, miss and
+  out-of-bounds short-circuits, blend-off-and-restored during the ID pass, scissor-clipped
+  picking, and program relink after context loss.
+- Mock WebGL2 harness extended with textures, framebuffers, `readPixels`, `getParameter`,
+  `isEnabled`/`enable`/`disable`, `scissor` and `clearColor` so the pick pass is verifiable
+  headlessly.
+- `npm test` now runs 8 core + 30 backend = 38 checks.
+
 ## [1.2.0] - 2026-07-11
 
 ### Added

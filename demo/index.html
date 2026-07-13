@@ -475,7 +475,7 @@
         <div class="brand">
             <span class="mark">◐</span>
             <span class="pkg">@zakkster/lite-gl</span>
-            <span class="ver">v1.2.0</span>
+            <span class="ver">v1.3.0</span>
         </div>
         <div class="tagline"><span class="dot"></span>oscilloscope · instanced GPU renderer</div>
     </header>
@@ -485,6 +485,7 @@
         <button data-tab="lorenz"><span class="scene-num">02</span>Lorenz Ribbon</button>
         <button data-tab="bars"><span class="scene-num">03</span>Quad Spectrum</button>
         <button data-tab="dirty"><span class="scene-num">04</span>Dirty Window</button>
+        <button data-tab="split"><span class="scene-num">05</span>Split Scope</button>
     </nav>
 
     <main>
@@ -735,6 +736,74 @@
                 </section>
             </aside>
         </section>
+        <!-- ─── SCENE 05: SPLIT SCOPE (multi-field + scissor panes + GPU picking) ─── -->
+        <section class="scene" data-scene="split">
+            <div class="stage" id="split-stage">
+                <canvas id="split-canvas"></canvas>
+                <div class="no-webgl" id="split-nogl">WebGL2 unavailable in this browser.</div>
+                <div class="stage-overlay tl"><span class="label">pane A · LINE + POINT</span></div>
+                <div class="stage-overlay tr">
+                    <span class="label">hovered instance</span>
+                    <span class="big magenta" id="split-hit">—</span>
+                </div>
+                <div class="stage-overlay bl">
+                    <span class="label" id="split-panes">1 canvas · 1 context · 4 fields · 3 programs</span>
+                </div>
+                <div class="stage-overlay br">
+                    <span class="label">move the pointer · picking is GPU-side</span>
+                </div>
+            </div>
+            <aside class="panel">
+                <div class="panel-head">scene 05 · multi-field + picking</div>
+                <section>
+                    <p class="help-line">
+                        One canvas, one GL context, <strong>four fields</strong> — and only
+                        <strong>three programs</strong>, because both point sinks share a cached one.
+                        <code>setScissor</code> gives each pane its own region; <code>pick(x, y)</code>
+                        runs an <strong>offscreen ID pass</strong> and reads back a single pixel, so hover
+                        works at a million instances with <strong>no CPU hit-testing</strong>.
+                    </p>
+                    <div class="btn-row">
+                        <button class="btn primary" id="split-rotate" aria-pressed="true">◐ auto-rotate</button>
+                        <button class="btn" id="split-swap">swap panes</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>Pick readout</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">pane</div>
+                            <div class="v cyan" id="split-pane">—</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">index</div>
+                            <div class="v magenta" id="split-idx">—</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">picks / sec</div>
+                            <div class="v amber" id="split-pps">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">fps</div>
+                            <div class="v green" id="split-fps">60</div>
+                        </div>
+                    </div>
+                </section>
+                <section>
+                    <h3>Fields</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">line segs</div>
+                            <div class="v cyan" id="split-nline">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">points</div>
+                            <div class="v green" id="split-npt">0</div>
+                        </div>
+                    </div>
+                </section>
+            </aside>
+        </section>
     </main>
 </div>
 
@@ -765,6 +834,35 @@
     : n >= 1e3 ? (Math.round(n / 100) / 10) + "K" : String(n | 0));
 
   const $ = (id) => document.getElementById(id);
+
+  // ─── HUD writers: skip the string formatting AND the DOM write when the value has
+  // not changed. The telemetry tick runs ~7.5x/sec forever, and toFixed()/fmt()/"+" all
+  // mint fresh strings, so a value that is merely *stable* would still trickle garbage.
+  // The last value is stashed on the element itself (a number -- no allocation).
+  const hudNum = ($el, v) => {
+    if ($el._v !== v) {
+      $el._v = v;
+      $el.textContent = v;
+    }
+  };
+  const hudFmt = ($el, v) => {
+    if ($el._v !== v) {
+      $el._v = v;
+      $el.textContent = fmt(v);
+    }
+  };
+  const hudFixed = ($el, v, digits, suffix) => {
+    if ($el._v !== v) {
+      $el._v = v;
+      $el.textContent = v.toFixed(digits) + suffix;
+    }
+  };
+  const hudText = ($el, s) => {
+    if ($el._t !== s) {
+      $el._t = s;
+      $el.textContent = s;
+    }
+  };
 
   // Set a GL canvas to its CSS box in device pixels. Returns [w, h] in device px.
   function sizeGL(canvas) {
@@ -975,15 +1073,15 @@
       fpsN++;
       const now = performance.now();
       if (now - fpsT >= 500) {
-        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        hudNum($fps, Math.round(fpsN * 1000 / (now - fpsT)));
         fpsT = now;
         fpsN = 0;
       }
       if ((hudTick++ & 7) === 0) {
-        $count.textContent = fmt(fld.count);
-        $redraws.textContent = fmt(redraws);
-        $zoomV.textContent = zoom().toFixed(2) + "×";
-        $upload.textContent = fmt(lastUpload);
+        hudFmt($count, fld.count);
+        hudFmt($redraws, redraws);
+        hudFixed($zoomV, zoom(), 2, "×");
+        hudFmt($upload, lastUpload);
       }
       raf = requestAnimationFrame(frame);
     }
@@ -1152,15 +1250,15 @@
       fpsN++;
       const now = performance.now();
       if (now - fpsT >= 500) {
-        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        hudNum($fps, Math.round(fpsN * 1000 / (now - fpsT)));
         fpsT = now;
         fpsN = 0;
       }
       if ((hudTick++ & 7) === 0) {
-        $count.textContent = fmt(fld.count);
-        $redraws.textContent = fmt(redraws);
-        $zoomV.textContent = zoom().toFixed(2) + "×";
-        $draws.textContent = "1";
+        hudFmt($count, fld.count);
+        hudFmt($redraws, redraws);
+        hudFixed($zoomV, zoom(), 2, "×");
+        hudText($draws, "1");
       }
       raf = requestAnimationFrame(frame);
     }
@@ -1276,13 +1374,13 @@
 
       fpsN++;
       if (now - fpsT >= 500) {
-        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        hudNum($fps, Math.round(fpsN * 1000 / (now - fpsT)));
         fpsT = now;
         fpsN = 0;
       }
       if ((hudTick++ & 7) === 0) {
-        $quads.textContent = fmt(count * 2);
-        $draws.textContent = "1";
+        hudFmt($quads, count * 2);
+        hudText($draws, "1");
       }
       raf = requestAnimationFrame(frame);
     }
@@ -1414,18 +1512,22 @@
       fpsN++;
       const now = performance.now();
       if (now - fpsT >= 500) {
-        $fps.textContent = Math.round(fpsN * 1000 / (now - fpsT));
+        hudNum($fps, Math.round(fpsN * 1000 / (now - fpsT)));
         fpsT = now;
         fpsN = 0;
       }
       if ((hudTick++ & 7) === 0) {
         const total = TOTAL * 9, pct = total ? (lastFloats / total * 100) : 0;
-        $cells.textContent = fmt(TOTAL);
-        $floats.textContent = fmt(lastFloats);
-        $pct.textContent = pct.toFixed(1) + "%";
-        $of.textContent = pct.toFixed(1) + "%";
-        $rest.textContent = "~" + (100 - pct).toFixed(0) + "%";
-        $window.textContent = lo >= 0 ? ("window " + lo + "–" + hi) : "window —";
+        hudFmt($cells, TOTAL);
+        hudFmt($floats, lastFloats);
+        hudFixed($pct, pct, 1, "%");
+        hudFixed($of, pct, 1, "%");
+        hudFixed($rest, 100 - pct, 0, "%");
+        if ($window._lo !== lo || $window._hi !== hi) {     // only rebuild on a new window
+          $window._lo = lo;
+          $window._hi = hi;
+          $window.textContent = lo >= 0 ? ("window " + lo + "\u2013" + hi) : "window \u2014";
+        }
       }
       raf = requestAnimationFrame(frame);
     }
@@ -1455,7 +1557,299 @@
   })();
 
   // ─── tab switching: only the active scene runs ────────────────────────────
-  const scenes = { field, lorenz, bars, dirty };
+  // ══════════════════════════════════════════════════════════════════════════
+  // SCENE 05 · SPLIT SCOPE (multi-field, scissor panes, GPU picking)
+  // ══════════════════════════════════════════════════════════════════════════
+  const split = (() => {
+    const $canvas = $("split-canvas"), $nogl = $("split-nogl");
+    const $hit = $("split-hit"), $pane = $("split-pane"), $idx = $("split-idx");
+    const $pps = $("split-pps"), $fps = $("split-fps"), $nline = $("split-nline"), $npt = $("split-npt");
+    const $rotate = $("split-rotate"), $swap = $("split-swap"), $panes = $("split-panes");
+
+    const gl = $canvas.getContext("webgl2", { antialias: false, alpha: true });
+    if (!gl) {
+      $nogl.setAttribute("data-active", "");
+      return {
+        resize() {
+        }, start() {
+        }, stop() {
+        },
+      };
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);           // additive phosphor glow
+
+    const N_LORENZ = 140_000, SEG = N_LORENZ - 1;
+    const N_PTS = 260_000, N_STARS = 2_600, GAP = 10;
+
+    // Four fields, ONE context. Both point sinks share one cached program.
+    const lineFld = createField({ capacity: SEG, stride: LAYOUT.LINE });
+    const ptFld = createField({ capacity: N_PTS, stride: LAYOUT.POINT });
+    const starFld = createField({ capacity: N_STARS, stride: LAYOUT.POINT });
+    const markFld = createField({ capacity: 8, stride: LAYOUT.QUAD });
+
+    const starSink = createPointSink(gl, { capacity: N_STARS });   // links the POINT program
+    const ptSink = createPointSink(gl, { capacity: N_PTS });       // reuses it (cache hit)
+    const lineSink = createLineSink(gl, { capacity: SEG });
+    const markSink = createQuadSink(gl, { capacity: 8 });
+
+    const lz = genLorenz(N_LORENZ, 0.005);
+    const dj = genAttractor(N_PTS, -2.0, -2.0, -1.2, 2.0);
+    const lsx = new Float64Array(N_LORENZ), lsy = new Float64Array(N_LORENZ);
+
+    // bake widths / sizes / colours once -- projection only rewrites positions
+    const ld = lineFld.data;
+    for (let i = 0; i < SEG; i++) {
+      const b = i * 9;
+      ld[b + 4] = 1.6 * DPR;
+      phosphorInto(ld, b + 5, i / SEG);
+      ld[b + 8] = 0.45;
+    }
+    lineFld.setCount(SEG);
+
+    const pd = ptFld.data;
+    for (let i = 0; i < N_PTS; i++) {
+      const b = i * 8;
+      pd[b + 2] = 1.9 * DPR;
+      phosphorInto(pd, b + 3, i / N_PTS);
+      pd[b + 6] = 0.45;
+    }
+    ptFld.setCount(N_PTS);
+
+    // static starfield behind pane A (proves the shared point program, adds depth)
+    const sd = starFld.data;
+    for (let i = 0; i < N_STARS; i++) {
+      const b = i * 8;
+      sd[b + 2] = (1 + (i % 3)) * DPR;
+      sd[b + 3] = 0.55;
+      sd[b + 4] = 0.72;
+      sd[b + 5] = 0.68;
+      sd[b + 6] = 0.30;
+    }
+    starFld.setCount(N_STARS);
+
+    let W = 1, H = 1, paneW = 1, lineLeft = true;
+    let lineScale = 1, ptScale = 1, phase = 0.6, autoRot = true;
+    let running = false, raf = 0, t0 = performance.now(), fpsT = t0, fpsN = 0, hudTick = 0;
+    let hoverX = -1, hoverY = -1, pickPending = false;
+    let hitPane = -1, hitIdx = -1, picks = 0, ppsT = t0, pps = 0;
+
+    const paneX = (isLine) => ((isLine === lineLeft) ? 0 : paneW + GAP);
+
+    function projectLines() {
+      const cx = paneX(true) + paneW * 0.5, cy = H * 0.5;
+      const cosP = Math.cos(phase), sinP = Math.sin(phase), sc = lineScale;
+      for (let i = 0; i < N_LORENZ; i++) {
+        const rx = lz.wx[i] * cosP - lz.wy[i] * sinP;
+        lsx[i] = cx + rx * sc;
+        lsy[i] = cy - lz.wz[i] * sc;
+      }
+      const d = lineFld.data;
+      for (let i = 0; i < SEG; i++) {
+        const b = i * 9;
+        d[b] = lsx[i];
+        d[b + 1] = lsy[i];
+        d[b + 2] = lsx[i + 1];
+        d[b + 3] = lsy[i + 1];
+      }
+      lineFld.touchAll();
+    }
+
+    function projectPoints() {
+      const cx = paneX(false) + paneW * 0.5, cy = H * 0.5;
+      const cosP = Math.cos(phase * 0.7), sinP = Math.sin(phase * 0.7), sc = ptScale;
+      const d = ptFld.data;
+      for (let i = 0; i < N_PTS; i++) {
+        const wx = dj.wx[i], wy = dj.wy[i];
+        const b = i * 8;
+        d[b] = cx + (wx * cosP - wy * sinP) * sc;
+        d[b + 1] = cy + (wx * sinP + wy * cosP) * sc;
+      }
+      ptFld.touchAll();
+    }
+
+    function scatterStars() {
+      const d = starFld.data, x0 = paneX(true);
+      for (let i = 0; i < N_STARS; i++) {
+        const b = i * 8;
+        // deterministic hash -> stable star positions inside pane A
+        const h1 = Math.sin(i * 12.9898) * 43758.5453, h2 = Math.sin(i * 78.233) * 12345.6789;
+        d[b] = x0 + (h1 - Math.floor(h1)) * paneW;
+        d[b + 1] = (h2 - Math.floor(h2)) * H;
+      }
+      starFld.touchAll();
+    }
+
+    // highlight marker: a spinning diamond + crosshair bars, built from 3 quads.
+    // The writer is hoisted -- setMarker runs every frame while hovering, so a closure
+    // defined in here would be a fresh heap object per frame.
+    function putMark(i, cx, cy, w, h, rot, a) {
+      const d = markFld.data, b = i * 9;
+      d[b] = cx;
+      d[b + 1] = cy;
+      d[b + 2] = w;
+      d[b + 3] = h;
+      d[b + 4] = rot;
+      d[b + 5] = 0.91;
+      d[b + 6] = 0.47;
+      d[b + 7] = 0.66;
+      d[b + 8] = a;   // magenta
+    }
+
+    function setMarker(x, y) {
+      const s = 20 * DPR, t = performance.now() * 0.004;
+      putMark(0, x, y, s, s, t, 0.55);                      // spinning diamond
+      putMark(1, x, y, s * 2.4, 1.5 * DPR, 0, 0.9);         // horizontal tick
+      putMark(2, x, y, 1.5 * DPR, s * 2.4, 0, 0.9);         // vertical tick
+      markFld.setCount(3);
+      markFld.touchAll();
+    }
+
+    const ac = new AbortController();
+    const sig = ac.signal;
+    // pointermove fires at the pointer's polling rate (125-1000Hz). getBoundingClientRect()
+    // would allocate a DOMRect *and* force a synchronous layout on every one of those events,
+    // so the canvas origin is cached in resize() -- the only time it can change here (the
+    // page never scrolls: body is 100vh / overflow:hidden, and tab switches call resize()).
+    let canvasLeft = 0, canvasTop = 0;
+
+    $canvas.addEventListener("pointermove", (e) => {
+      hoverX = (e.clientX - canvasLeft) * DPR;         // CSS px -> device px
+      hoverY = (e.clientY - canvasTop) * DPR;
+      pickPending = true;                              // coalesce: at most one pick per frame
+    }, { signal: sig });
+    $canvas.addEventListener("pointerleave", () => {
+      hoverX = -1;
+      pickPending = false;
+      hitIdx = -1;
+      hitPane = -1;
+    }, { signal: sig });
+    $rotate.addEventListener("click", () => {
+      autoRot = !autoRot;
+      $rotate.setAttribute("aria-pressed", autoRot ? "true" : "false");
+    }, { signal: sig });
+    $swap.addEventListener("click", () => {
+      lineLeft = !lineLeft;
+      layout();
+    }, { signal: sig });
+
+    function layout() {
+      paneW = ((W - GAP) * 0.5) | 0;
+      lineScale = Math.min(paneW, H) / (lz.ext * 1.15);
+      ptScale = Math.min(paneW, H) / 2.7;
+      // each field owns a pane; scissor clips BOTH its draw and its picks
+      lineSink.setScissor(paneX(true), 0, paneW, H);
+      starSink.setScissor(paneX(true), 0, paneW, H);
+      ptSink.setScissor(paneX(false), 0, paneW, H);
+      scatterStars();
+      projectLines();
+      projectPoints();
+    }
+
+    function frame() {
+      if (!running) return;
+      const now = performance.now();
+      if (autoRot) {
+        phase = 0.6 + (now - t0) * 0.00011;
+        projectLines();
+        projectPoints();
+      }
+
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      starFld.flush(starSink);        // pane A backdrop
+      lineFld.flush(lineSink);        // pane A: Lorenz ribbon  (LINE)
+      ptFld.flush(ptSink);            // pane B: attractor      (POINT)
+
+      // ── GPU pick: one ID pass, one pixel read. Never every frame -- only on a move.
+      if (pickPending) {
+        pickPending = false;
+        const inLine = (hoverX >= paneX(true) && hoverX < paneX(true) + paneW);
+        const inPts = (hoverX >= paneX(false) && hoverX < paneX(false) + paneW);
+        hitIdx = -1;
+        hitPane = -1;
+        if (inLine) {
+          hitIdx = lineSink.pick(hoverX, hoverY);
+          if (hitIdx >= 0) hitPane = 0;
+        } else if (inPts) {
+          hitIdx = ptSink.pick(hoverX, hoverY);
+          if (hitIdx >= 0) hitPane = 1;
+        }
+        picks++;
+      }
+
+      if (hitIdx >= 0) {
+        if (hitPane === 0) {
+          const b = hitIdx * 9, d = lineFld.data;
+          setMarker((d[b] + d[b + 2]) * 0.5, (d[b + 1] + d[b + 3]) * 0.5);   // segment midpoint
+        } else {
+          const b = hitIdx * 8, d = ptFld.data;
+          setMarker(d[b], d[b + 1]);
+        }
+        markSink.setScissor(paneX(hitPane === 0), 0, paneW, H);
+        markFld.flush(markSink);
+      }
+
+      fpsN++;
+      if (now - fpsT >= 500) {
+        hudNum($fps, Math.round(fpsN * 1000 / (now - fpsT)));
+        fpsT = now;
+        fpsN = 0;
+      }
+      if (now - ppsT >= 1000) {
+        pps = picks;
+        picks = 0;
+        ppsT = now;
+      }
+      if ((hudTick++ & 7) === 0) {
+        if ($hit._v !== hitIdx) {
+          $hit._v = hitIdx;
+          $hit.textContent = hitIdx >= 0 ? fmt(hitIdx) : "\u2014";
+        }
+        hudText($pane, hitPane < 0 ? "\u2014" : (hitPane === 0 ? "lines" : "points"));
+        if ($idx._v !== hitIdx) {
+          $idx._v = hitIdx;
+          $idx.textContent = hitIdx >= 0 ? hitIdx : "\u2014";
+        }
+        hudNum($pps, pps);
+        hudFmt($nline, SEG);
+        hudFmt($npt, N_PTS);
+      }
+      raf = requestAnimationFrame(frame);
+    }
+
+    function resize() {
+      const [w, h] = sizeGL($canvas);
+      W = w;
+      H = h;
+      const r = $canvas.getBoundingClientRect();   // once per resize, never per pointermove
+      canvasLeft = r.left;
+      canvasTop = r.top;
+      for (const s of [starSink, ptSink, lineSink, markSink]) s.resize(W, H);
+      layout();
+      $panes.textContent = "1 canvas · 1 context · 4 fields · 3 programs";
+    }
+
+    return {
+      resize,
+      start() {
+        if (running) return;
+        running = true;
+        t0 = performance.now();
+        fpsT = t0;
+        ppsT = t0;
+        fpsN = 0;
+        raf = requestAnimationFrame(frame);
+      },
+      stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+      },
+    };
+  })();
+
+  // ─── tabs ────────────────────────────────────────────────────────────────
+  const scenes = { field, lorenz, bars, dirty, split };
   let current = "field";
 
   function activate(tab) {
@@ -1487,6 +1881,7 @@
     lorenz.stop();
     bars.stop();
     dirty.stop();
+    split.stop();
   });
 
   // boot the active scene

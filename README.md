@@ -150,6 +150,13 @@ is the whole point of this package.
   + `vertexAttribDivisor`. `LINE` uses **butt caps** only in 1.2 (ends cut
   perpendicular; a polyline is N−1 independent segments); round joins are a 1.3
   follow-up if seams show at chart widths.
+- **v1.3 adds multi-field scenes and picking.** Sinks of the same primitive type share
+  one linked program *per GL context* (refcounted, so disposing one sink can't pull the
+  program out from under another); `setScissor` clips a field to a pane; `pick(x, y)`
+  runs one offscreen ID pass and reads back a single pixel. Honest limits: picking costs
+  one extra draw **per call**, so throttle it to `pointermove` rather than the frame
+  loop; overlapping instances resolve as last-drawn-wins (painter's order); and `pick`
+  is per-sink — for cross-field picking, call it on each field in z-order.
 - **Re-projection is O(N):** a camera/data change re-projects all instances. That's
   cheap on CPU (a million simple writes is sub-millisecond); the pipeline stays
   allocation-free, which is what actually protects the frame budget.
@@ -182,10 +189,13 @@ interface Sink {
 createPointSink(gl: WebGL2RenderingContext, { capacity }): PointSink   // LAYOUT.POINT -> GL_POINTS
 createQuadSink(gl: WebGL2RenderingContext, { capacity }): QuadSink    // LAYOUT.QUAD  -> instanced TRIANGLE_STRIP
 createLineSink(gl: WebGL2RenderingContext, { capacity }): LineSink    // LAYOUT.LINE  -> instanced TRIANGLE_STRIP (thick segments)
+PICK_MAX_ID                                                           // 0xFFFFFE
 
 // all three sinks expose the same surface:
 //   upload(data, floatOffset, floatCount, instanceOffset, stride)
 //   draw(count); resize(w, h); onContextRestored(cb); isContextLost(); capacity; dispose; gl
+//   setScissor(x, y, w, h); clearScissor()      // v1.3 -- pane clipping, top-left origin
+//   pick(x, y, count?) -> instance index | -1   // v1.3 -- GPU ID pass, no CPU hit-testing
 ```
 
 `QUAD` instances are `x, y, w, h, rot, r, g, b, a` (`LAYOUT.QUAD`, stride 9); `LINE`
@@ -194,6 +204,31 @@ endpoints and width are in **screen pixels**, expanded to a thick quad in the ve
 shader. Everything is screen-space — do world→screen in `project`, same as points.
 `capacity` for a line sink is the number of **segments** (a polyline of N points is
 N−1 segments).
+
+### Multi-field scenes and picking (v1.3)
+
+Many fields, one context, one program per primitive type:
+
+```js
+const points = createPointSink(gl, { capacity: 1_000_000 });   // links the point program
+const glow   = createPointSink(gl, { capacity: 50_000 });      // reuses it (cached per context)
+const lines  = createLineSink(gl,  { capacity: 300_000 });
+
+// Two panes in one canvas, no extra framebuffers:
+lines.setScissor(0, 0, 600, 800);       // left
+points.setScissor(620, 0, 600, 800);    // right
+
+// Hover at 1M points, without touching the CPU:
+canvas.addEventListener("pointermove", (e) => {
+  const i = points.pick(e.offsetX * dpr, e.offsetY * dpr);   // device px, top-left origin
+  if (i !== -1) showTooltip(myData[i]);
+});
+```
+
+`pick` renders one offscreen ID pass and reads back a single pixel, so the CPU never
+hit-tests. It respects the sink's scissor (a hover can't hit a neighbouring pane) and
+restores the framebuffer, clear colour and blend state it found. Call it on a throttled
+`pointermove` — **not** every frame. IDs are 24-bit, so `0 … PICK_MAX_ID` are pickable.
 
 ---
 

@@ -146,6 +146,221 @@ function link(gl, vsSrc, fsSrc) {
     return prog;
 }
 
+// === PICK PASS (v1.3) ========================================================
+// An offscreen RGBA8 target where each instance is drawn in a flat colour that
+// encodes its index (24-bit little-endian). One readPixels of a single pixel
+// decodes the instance under the cursor -- no CPU hit-testing, so hover works
+// at 1M instances. White (0xFFFFFF) is reserved as "miss" (background).
+//
+// NOTE: the fragment shader MUST declare `precision highp int`. The default
+// integer precision in a fragment shader is mediump, which is only guaranteed
+// 16 bits -- ids above 65535 would be truncated.
+
+const PICK_POINT_VS = `#version 300 es
+layout(location=0) in vec2 a_pos;
+layout(location=1) in float a_size;
+uniform vec2 u_resolution;
+flat out uint v_id;
+void main() {
+  vec2 clip = (a_pos / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  gl_PointSize = max(a_size, 3.0);   // widen the hit area a little
+  v_id = uint(gl_VertexID);
+}`;
+
+const PICK_QUAD_VS = `#version 300 es
+layout(location=0) in vec2 a_local;
+layout(location=1) in vec2 a_pos;
+layout(location=2) in vec2 a_size;
+layout(location=3) in float a_rot;
+uniform vec2 u_resolution;
+flat out uint v_id;
+void main() {
+  float c = cos(a_rot);
+  float s = sin(a_rot);
+  vec2 rot = vec2(a_local.x * c - a_local.y * s, a_local.x * s + a_local.y * c);
+  vec2 world = a_pos + rot * a_size;
+  vec2 clip = (world / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_id = uint(gl_InstanceID);
+}`;
+
+const PICK_LINE_VS = `#version 300 es
+layout(location=0) in vec2 a_ts;
+layout(location=1) in vec2 a_p0;
+layout(location=2) in vec2 a_p1;
+layout(location=3) in float a_width;
+uniform vec2 u_resolution;
+flat out uint v_id;
+void main() {
+  vec2 dir = a_p1 - a_p0;
+  float len = length(dir);
+  vec2 unitDir = (len > 0.0001) ? (dir / len) : vec2(1.0, 0.0);
+  vec2 perp = vec2(-unitDir.y, unitDir.x);
+  vec2 base = mix(a_p0, a_p1, a_ts.x);
+  vec2 world = base + a_ts.y * (max(a_width, 4.0) * 0.5) * perp;   // min hit width
+  vec2 clip = (world / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  v_id = uint(gl_InstanceID);
+}`;
+
+const PICK_FS = `#version 300 es
+precision mediump float;
+precision highp int;
+flat in uint v_id;
+out vec4 outColor;
+void main() {
+  uint id = v_id;
+  outColor = vec4(
+    float( id        & 0xFFu) / 255.0,
+    float((id >>  8) & 0xFFu) / 255.0,
+    float((id >> 16) & 0xFFu) / 255.0,
+    1.0);
+}`;
+
+/** Max pickable instance index: 24-bit space minus the reserved "miss" value. */
+export const PICK_MAX_ID = 0xFFFFFE;
+
+const PROGRAM_SOURCES = {
+    point: [POINT_VS, POINT_FS],
+    quad: [QUAD_VS, QUAD_FS],
+    line: [LINE_VS, LINE_FS],
+    pointPick: [PICK_POINT_VS, PICK_FS],
+    quadPick: [PICK_QUAD_VS, PICK_FS],
+    linePick: [PICK_LINE_VS, PICK_FS],
+};
+
+// === SHARED PROGRAM CACHE (v1.3) ============================================
+// N sinks of the same primitive type in the SAME context share one linked
+// program: the first pays the compile/link, the rest reuse it.
+//
+// Keyed per WebGL2RenderingContext -- a WebGLProgram belongs to the context
+// that created it, and using it with another context is an INVALID_OPERATION.
+// (A page can easily hold several contexts; the demo has one per scene.)
+// Refcounted, so dispose()ing one sink cannot delete a program another still uses.
+const programCache = new WeakMap();   // gl -> Map<key, { prog, refs }>
+
+function acquireProgram(gl, key) {
+    let byKey = programCache.get(gl);
+    if (!byKey) { byKey = new Map(); programCache.set(gl, byKey); }
+    let entry = byKey.get(key);
+    if (!entry) {
+        const src = PROGRAM_SOURCES[key];
+        entry = { prog: link(gl, src[0], src[1]), refs: 0 };
+        byKey.set(key, entry);
+    }
+    entry.refs++;
+    return entry.prog;
+}
+
+function releaseProgram(gl, key) {
+    const byKey = programCache.get(gl);
+    if (!byKey) return;
+    const entry = byKey.get(key);
+    if (!entry) return;
+    entry.refs--;
+    if (entry.refs <= 0) {
+        gl.deleteProgram(entry.prog);
+        byKey.delete(key);
+        if (byKey.size === 0) programCache.delete(gl);
+    }
+}
+
+/** A lost context destroys every program it owns; drop them so we relink on restore. */
+function dropProgramCache(gl) { programCache.delete(gl); }
+
+/** Scratch for readPixels -- module-level so pick() allocates nothing. */
+const PICK_RGBA = new Uint8Array(4);
+
+/** Lazily-built offscreen ID target for one sink. */
+function createPicker(gl, primitive) {
+    const key = primitive + "Pick";
+    let fbo = null, tex = null, prog = null, uRes = null, tw = 0, th = 0;
+    return {
+        key,
+        /** After context loss the FBO/texture/program are gone; rebuild on next pick. */
+        invalidate() { fbo = null; tex = null; prog = null; tw = 0; th = 0; },
+        dispose() {
+            if (tex) gl.deleteTexture(tex);
+            if (fbo) gl.deleteFramebuffer(fbo);
+            tex = null; fbo = null; prog = null;
+        },
+        ensure(resW, resH, use) {
+            if (!prog) {
+                prog = use(key);
+                uRes = gl.getUniformLocation(prog, "u_resolution");
+            }
+            if (!fbo || tw !== resW || th !== resH) {   // (re)size with the canvas
+                if (tex) gl.deleteTexture(tex);
+                if (fbo) gl.deleteFramebuffer(fbo);
+                tex = gl.createTexture();
+                gl.bindTexture(gl.TEXTURE_2D, tex);
+                gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, resW, resH, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+                gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+                gl.bindTexture(gl.TEXTURE_2D, null);
+                fbo = gl.createFramebuffer();
+                gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+                gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
+                gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+                tw = resW; th = resH;
+            }
+            return { prog, uRes, fbo };
+        },
+        prog() { return prog; },
+    };
+}
+
+/** Apply a top-left-origin scissor rect. GL's scissor origin is bottom-left. */
+function applyScissor(gl, sc, resH) {
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(sc.x, resH - sc.y - sc.h, sc.w, sc.h);
+}
+
+/**
+ * Render the field into the ID target and read back one pixel.
+ * Restores the previously bound framebuffer, clear colour and blend state --
+ * a pick must never disturb the visible frame.
+ */
+function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc) {
+    if (count <= 0) return -1;
+    px = px | 0; py = py | 0;
+    if (px < 0 || py < 0 || px >= resW || py >= resH) return -1;
+
+    const t = picker.ensure(resW, resH, use);
+
+    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
+    const prevClear = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+    const blendOn = gl.isEnabled(gl.BLEND);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
+    gl.viewport(0, 0, resW, resH);
+    // IDs are bit patterns, not colours: blending them would corrupt the readback.
+    if (blendOn) gl.disable(gl.BLEND);
+    gl.clearColor(1, 1, 1, 1);            // white = miss
+    gl.clear(gl.COLOR_BUFFER_BIT);        // clear the WHOLE target first...
+
+    if (sc) applyScissor(gl, sc, resH);   // ...then clip the draw to the pane
+    gl.useProgram(t.prog);
+    gl.uniform2f(t.uRes, resW, resH);
+    gl.bindVertexArray(vao);
+    if (primitive === "point") gl.drawArrays(gl.POINTS, 0, count);
+    else gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+    gl.bindVertexArray(null);
+    if (sc) gl.disable(gl.SCISSOR_TEST);
+
+    gl.readPixels(px, resH - py - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, PICK_RGBA);
+
+    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    gl.viewport(0, 0, resW, resH);
+    gl.clearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
+    if (blendOn) gl.enable(gl.BLEND);
+
+    const r = PICK_RGBA[0], g = PICK_RGBA[1], b = PICK_RGBA[2];
+    if (r === 255 && g === 255 && b === 255) return -1;
+    return r | (g << 8) | (b << 16);
+}
+
 const POINT_STRIDE = 8;
 const POINT_STRIDE_BYTES = POINT_STRIDE * 4;
 
@@ -161,10 +376,15 @@ export function createPointSink(gl, opts) {
     let program = null, uResolution = null, vao = null, vbo = null;
     let resW = gl.drawingBufferWidth, resH = gl.drawingBufferHeight;
     let lost = false;
+    let scissor = null, lastCount = 0;
+    const sc = { x: 0, y: 0, w: 0, h: 0 };   // reused -- setScissor allocates nothing
+    const heldKeys = new Set();
+    const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
+    const picker = createPicker(gl, "point");
     const restoreCbs = [];
 
     function createResources() {
-        program = link(gl, POINT_VS, POINT_FS);
+        program = use("point");
         uResolution = gl.getUniformLocation(program, "u_resolution");
         vao = gl.createVertexArray();
         vbo = gl.createBuffer();
@@ -185,6 +405,8 @@ export function createPointSink(gl, opts) {
     function onLost(e) {
         e.preventDefault();
         lost = true;
+        dropProgramCache(gl);   // every program in this context is gone
+        picker.invalidate();
     }
     function onRestored() {
         createResources();
@@ -217,12 +439,30 @@ export function createPointSink(gl, opts) {
             gl.bufferSubData(gl.ARRAY_BUFFER, floatOffset * 4, data, floatOffset, floatCount);
         },
         draw(count) {
-            if (lost || count <= 0) return;
+            if (lost) return;
+            lastCount = count;
+            if (count <= 0) return;
             gl.useProgram(program);
             gl.uniform2f(uResolution, resW, resH);
             gl.bindVertexArray(vao);
+            if (scissor) applyScissor(gl, scissor, resH);
             gl.drawArrays(gl.POINTS, 0, count);
+            if (scissor) gl.disable(gl.SCISSOR_TEST);
             gl.bindVertexArray(null);
+        },
+        /** Clip draws AND picks to a rect (top-left origin, device px). One pane of a multi-pane chart. */
+        setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
+        /** Draw to the whole viewport again. */
+        clearScissor() { scissor = null; },
+        /**
+         * Instance index under (x, y) -- device px, top-left origin -- or -1 for a miss.
+         * Renders one ID pass offscreen and reads back a single pixel: no CPU hit-testing,
+         * so this is O(1) on the CPU even at 1M instances. Defaults to the count last drawn.
+         * Call it on demand (a throttled pointermove), never every frame.
+         */
+        pick(x, y, count) {
+            const n = (count === undefined) ? lastCount : count;
+            return pickAt(gl, picker, use, vao, "point", resW, resH, n, x, y, scissor);
         },
         onContextRestored(cb) {
             restoreCbs.push(cb);
@@ -236,7 +476,10 @@ export function createPointSink(gl, opts) {
             }
             if (vbo) gl.deleteBuffer(vbo);
             if (vao) gl.deleteVertexArray(vao);
-            if (program) gl.deleteProgram(program);
+            picker.dispose();
+            // Programs are shared: release our refs; the cache deletes at zero.
+            for (const k of heldKeys) releaseProgram(gl, k);
+            heldKeys.clear();
         },
     };
 }
@@ -269,10 +512,15 @@ export function createQuadSink(gl, opts) {
     let baseVbo = null, instanceVbo = null;
     let resW = gl.drawingBufferWidth, resH = gl.drawingBufferHeight;
     let lost = false;
+    let scissor = null, lastCount = 0;
+    const sc = { x: 0, y: 0, w: 0, h: 0 };   // reused -- setScissor allocates nothing
+    const heldKeys = new Set();
+    const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
+    const picker = createPicker(gl, "quad");
     const restoreCbs = [];
 
     function createResources() {
-        program = link(gl, QUAD_VS, QUAD_FS);
+        program = use("quad");
         uResolution = gl.getUniformLocation(program, "u_resolution");
 
         vao = gl.createVertexArray();
@@ -319,6 +567,8 @@ export function createQuadSink(gl, opts) {
     function onLost(e) {
         e.preventDefault();
         lost = true;
+        dropProgramCache(gl);   // every program in this context is gone
+        picker.invalidate();
     }
     function onRestored() {
         createResources();
@@ -354,12 +604,30 @@ export function createQuadSink(gl, opts) {
         },
         /** One instanced draw call for all `count` quads. */
         draw(count) {
-            if (lost || count <= 0) return;
+            if (lost) return;
+            lastCount = count;
+            if (count <= 0) return;
             gl.useProgram(program);
             gl.uniform2f(uResolution, resW, resH);
             gl.bindVertexArray(vao);
+            if (scissor) applyScissor(gl, scissor, resH);
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+            if (scissor) gl.disable(gl.SCISSOR_TEST);
             gl.bindVertexArray(null);
+        },
+        /** Clip draws AND picks to a rect (top-left origin, device px). One pane of a multi-pane chart. */
+        setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
+        /** Draw to the whole viewport again. */
+        clearScissor() { scissor = null; },
+        /**
+         * Instance index under (x, y) -- device px, top-left origin -- or -1 for a miss.
+         * Renders one ID pass offscreen and reads back a single pixel: no CPU hit-testing,
+         * so this is O(1) on the CPU even at 1M instances. Defaults to the count last drawn.
+         * Call it on demand (a throttled pointermove), never every frame.
+         */
+        pick(x, y, count) {
+            const n = (count === undefined) ? lastCount : count;
+            return pickAt(gl, picker, use, vao, "quad", resW, resH, n, x, y, scissor);
         },
         onContextRestored(cb) {
             restoreCbs.push(cb);
@@ -374,7 +642,10 @@ export function createQuadSink(gl, opts) {
             if (baseVbo) gl.deleteBuffer(baseVbo);
             if (instanceVbo) gl.deleteBuffer(instanceVbo);
             if (vao) gl.deleteVertexArray(vao);
-            if (program) gl.deleteProgram(program);
+            picker.dispose();
+            // Programs are shared: release our refs; the cache deletes at zero.
+            for (const k of heldKeys) releaseProgram(gl, k);
+            heldKeys.clear();
         },
     };
 }
@@ -411,10 +682,15 @@ export function createLineSink(gl, opts) {
     let baseVbo = null, instanceVbo = null;
     let resW = gl.drawingBufferWidth, resH = gl.drawingBufferHeight;
     let lost = false;
+    let scissor = null, lastCount = 0;
+    const sc = { x: 0, y: 0, w: 0, h: 0 };   // reused -- setScissor allocates nothing
+    const heldKeys = new Set();
+    const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
+    const picker = createPicker(gl, "line");
     const restoreCbs = [];
 
     function createResources() {
-        program = link(gl, LINE_VS, LINE_FS);
+        program = use("line");
         uResolution = gl.getUniformLocation(program, "u_resolution");
 
         vao = gl.createVertexArray();
@@ -461,6 +737,8 @@ export function createLineSink(gl, opts) {
     function onLost(e) {
         e.preventDefault();
         lost = true;
+        dropProgramCache(gl);   // every program in this context is gone
+        picker.invalidate();
     }
     function onRestored() {
         createResources();
@@ -496,12 +774,30 @@ export function createLineSink(gl, opts) {
         },
         /** One instanced draw call for all `count` segments. */
         draw(count) {
-            if (lost || count <= 0) return;
+            if (lost) return;
+            lastCount = count;
+            if (count <= 0) return;
             gl.useProgram(program);
             gl.uniform2f(uResolution, resW, resH);
             gl.bindVertexArray(vao);
+            if (scissor) applyScissor(gl, scissor, resH);
             gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
+            if (scissor) gl.disable(gl.SCISSOR_TEST);
             gl.bindVertexArray(null);
+        },
+        /** Clip draws AND picks to a rect (top-left origin, device px). One pane of a multi-pane chart. */
+        setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
+        /** Draw to the whole viewport again. */
+        clearScissor() { scissor = null; },
+        /**
+         * Instance index under (x, y) -- device px, top-left origin -- or -1 for a miss.
+         * Renders one ID pass offscreen and reads back a single pixel: no CPU hit-testing,
+         * so this is O(1) on the CPU even at 1M instances. Defaults to the count last drawn.
+         * Call it on demand (a throttled pointermove), never every frame.
+         */
+        pick(x, y, count) {
+            const n = (count === undefined) ? lastCount : count;
+            return pickAt(gl, picker, use, vao, "line", resW, resH, n, x, y, scissor);
         },
         onContextRestored(cb) {
             restoreCbs.push(cb);
@@ -516,7 +812,10 @@ export function createLineSink(gl, opts) {
             if (baseVbo) gl.deleteBuffer(baseVbo);
             if (instanceVbo) gl.deleteBuffer(instanceVbo);
             if (vao) gl.deleteVertexArray(vao);
-            if (program) gl.deleteProgram(program);
+            picker.dispose();
+            // Programs are shared: release our refs; the cache deletes at zero.
+            for (const k of heldKeys) releaseProgram(gl, k);
+            heldKeys.clear();
         },
     };
 }

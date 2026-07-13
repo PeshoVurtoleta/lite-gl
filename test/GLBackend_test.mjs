@@ -65,6 +65,47 @@ function makeGL(opts = {}) {
         drawArrays: rec("drawArrays"),
         drawArraysInstanced: rec("drawArraysInstanced"),
         vertexAttribDivisor: rec("vertexAttribDivisor"),
+
+        // --- v1.3: pick pass (FBO + ID texture + readback) and scissor ---
+        TEXTURE_2D: 0x0de1, RGBA: 0x1908, UNSIGNED_BYTE: 0x1401,
+        TEXTURE_MIN_FILTER: 0x2801, TEXTURE_MAG_FILTER: 0x2800, NEAREST: 0x2600,
+        FRAMEBUFFER: 0x8d40, COLOR_ATTACHMENT0: 0x8ce0, FRAMEBUFFER_BINDING: 0x8ca6,
+        COLOR_BUFFER_BIT: 0x4000, SCISSOR_TEST: 0x0c11, BLEND: 0x0be2,
+        COLOR_CLEAR_VALUE: 0x0c22,
+
+        // The pixel readPixels() will hand back. Tests set gl.__pixel = [r,g,b,a]
+        // to simulate "the instance with this id is under the cursor".
+        __pixel: [255, 255, 255, 255],
+        // Simulated GL state the backend must save/restore around a pick.
+        __boundFbo: null,
+        __clearColor: [0, 0, 0, 0],
+        __blend: false,
+
+        createTexture: () => { calls.push({ name: "createTexture", args: [] }); return obj("tex"); },
+        bindTexture: rec("bindTexture"),
+        texImage2D: rec("texImage2D"),
+        texParameteri: rec("texParameteri"),
+        deleteTexture: rec("deleteTexture"),
+        createFramebuffer: () => { calls.push({ name: "createFramebuffer", args: [] }); return obj("fbo"); },
+        bindFramebuffer(target, fbo) { calls.push({ name: "bindFramebuffer", args: [target, fbo] }); gl.__boundFbo = fbo; },
+        framebufferTexture2D: rec("framebufferTexture2D"),
+        deleteFramebuffer: rec("deleteFramebuffer"),
+        readPixels(x, y, w, h, fmt, type, out) {
+            calls.push({ name: "readPixels", args: [x, y, w, h, fmt, type, out] });
+            out[0] = gl.__pixel[0]; out[1] = gl.__pixel[1]; out[2] = gl.__pixel[2]; out[3] = gl.__pixel[3];
+        },
+        getParameter(p) {
+            calls.push({ name: "getParameter", args: [p] });
+            if (p === 0x8ca6) return gl.__boundFbo;      // FRAMEBUFFER_BINDING
+            if (p === 0x0c22) return gl.__clearColor;    // COLOR_CLEAR_VALUE
+            return null;
+        },
+        isEnabled(cap) { calls.push({ name: "isEnabled", args: [cap] }); return cap === 0x0be2 ? gl.__blend : false; },
+        enable(cap) { calls.push({ name: "enable", args: [cap] }); if (cap === 0x0be2) gl.__blend = true; },
+        disable(cap) { calls.push({ name: "disable", args: [cap] }); if (cap === 0x0be2) gl.__blend = false; },
+        scissor: rec("scissor"),
+        clearColor(r, g, b, a) { calls.push({ name: "clearColor", args: [r, g, b, a] }); gl.__clearColor = [r, g, b, a]; },
+        clear: rec("clear"),
     };
     return gl;
 }
@@ -465,4 +506,185 @@ test("end-to-end: the GL.js core flushes a LAYOUT.LINE field through the real li
     sub = gl.all("bufferSubData").at(-1);
     assert.deepEqual([sub.args[1], sub.args[3], sub.args[4]], [27 * 4, 27, 9], "only the 4th segment's window");
     assert.deepEqual(gl.all("drawArraysInstanced").at(-1).args, [gl.TRIANGLE_STRIP, 0, 4, 4]);
+});
+
+// ---------------------------------------------------------------------------
+// v1.3: shared program cache, scissor regions, ID-buffer picking.
+// ---------------------------------------------------------------------------
+
+test("N sinks of the same type in one context share ONE linked program", () => {
+    const gl = makeGL();
+    const a = createPointSink(gl, { capacity: 100 });
+    assert.equal(gl.count("linkProgram"), 1, "first sink compiles + links");
+    assert.equal(gl.count("createShader"), 2);
+
+    const b = createPointSink(gl, { capacity: 100 });
+    const c = createPointSink(gl, { capacity: 100 });
+    assert.equal(gl.count("linkProgram"), 1, "2nd and 3rd sinks reuse the cached program");
+    assert.equal(gl.count("createShader"), 2, "no extra shader compiles");
+    // ...but each still gets its own VAO + VBO (its own data).
+    assert.equal(gl.count("createVertexArray"), 3);
+
+    // A different primitive type links its own program.
+    createQuadSink(gl, { capacity: 100 });
+    assert.equal(gl.count("linkProgram"), 2, "quad links its own program");
+    a.dispose(); b.dispose(); c.dispose();
+});
+
+test("a program is NOT deleted while another sink still uses it (refcounted dispose)", () => {
+    const gl = makeGL();
+    const a = createPointSink(gl, { capacity: 100 });
+    const b = createPointSink(gl, { capacity: 100 });
+
+    a.dispose();
+    assert.equal(gl.count("deleteProgram"), 0, "b still holds the shared program");
+    assert.equal(gl.count("deleteVertexArray"), 1, "but a's own VAO is gone");
+
+    b.dispose();
+    assert.equal(gl.count("deleteProgram"), 1, "last ref released -> program deleted exactly once");
+});
+
+test("programs are cached PER CONTEXT (a WebGLProgram cannot cross contexts)", () => {
+    const gl1 = makeGL();
+    const gl2 = makeGL();
+    createPointSink(gl1, { capacity: 100 });
+    createPointSink(gl2, { capacity: 100 });
+    assert.equal(gl1.count("linkProgram"), 1, "context 1 links its own program");
+    assert.equal(gl2.count("linkProgram"), 1, "context 2 links its OWN program, not gl1's");
+    assert.equal(gl2.count("createShader"), 2, "context 2 compiles its own shaders");
+});
+
+test("setScissor clips the draw to a top-left-origin rect and is disabled afterwards", () => {
+    const gl = makeGL();
+    const sink = createQuadSink(gl, { capacity: 100 });
+    sink.resize(1000, 800);
+
+    sink.setScissor(100, 50, 400, 300);        // top-left origin
+    sink.draw(10);
+    const en = gl.all("enable").filter((c) => c.args[0] === gl.SCISSOR_TEST);
+    assert.equal(en.length, 1, "scissor test enabled for the draw");
+    // GL's scissor origin is bottom-left: y_gl = resH - y - h = 800 - 50 - 300 = 450
+    assert.deepEqual(gl.find("scissor").args, [100, 450, 400, 300], "y flipped into GL space");
+    const dis = gl.all("disable").filter((c) => c.args[0] === gl.SCISSOR_TEST);
+    assert.equal(dis.length, 1, "scissor test disabled again (no leaking state)");
+
+    sink.clearScissor();
+    const before = gl.count("scissor");
+    sink.draw(10);
+    assert.equal(gl.count("scissor"), before, "no scissor call once cleared");
+});
+
+test("pick() renders an ID pass offscreen and decodes the instance index from one pixel", () => {
+    const gl = makeGL();
+    const sink = createQuadSink(gl, { capacity: 1000 });
+    sink.resize(640, 480);
+    sink.draw(500);                       // pick defaults to the count last drawn
+
+    // id 197121 = 0x030201 -> little-endian bytes r=1, g=2, b=3
+    gl.__pixel = [1, 2, 3, 255];
+    const id = sink.pick(320, 240);
+    assert.equal(id, 1 | (2 << 8) | (3 << 16), "24-bit little-endian decode");
+
+    // lazily built its own FBO + ID texture, sized to the canvas
+    assert.equal(gl.count("createFramebuffer"), 1);
+    assert.equal(gl.count("createTexture"), 1);
+    const ti = gl.find("texImage2D").args;
+    assert.equal(ti[3], 640, "ID texture width == canvas width");
+    assert.equal(ti[4], 480, "ID texture height == canvas height");
+
+    // read the pixel under the cursor, y flipped into GL space (480 - 240 - 1)
+    const rp = gl.find("readPixels").args;
+    assert.deepEqual([rp[0], rp[1], rp[2], rp[3]], [320, 239, 1, 1], "single pixel, y-flipped");
+
+    // a second pick reuses the same target
+    sink.pick(10, 10);
+    assert.equal(gl.count("createFramebuffer"), 1, "FBO reused across picks");
+});
+
+test("pick() returns -1 for background, empty fields, and out-of-bounds coordinates", () => {
+    const gl = makeGL();
+    const sink = createPointSink(gl, { capacity: 1000 });
+    sink.resize(640, 480);
+
+    assert.equal(sink.pick(10, 10), -1, "nothing drawn yet -> miss");
+
+    sink.draw(100);
+    gl.__pixel = [255, 255, 255, 255];               // white = background
+    assert.equal(sink.pick(10, 10), -1, "background -> -1");
+
+    gl.__pixel = [0, 0, 0, 255];                     // id 0 is a VALID instance
+    assert.equal(sink.pick(10, 10), 0, "instance 0 is not confused with a miss");
+
+    const reads = gl.count("readPixels");
+    assert.equal(sink.pick(-1, 10), -1, "negative -> -1");
+    assert.equal(sink.pick(640, 10), -1, "past the right edge -> -1");
+    assert.equal(sink.pick(10, 480), -1, "past the bottom edge -> -1");
+    assert.equal(gl.count("readPixels"), reads, "no GL work for out-of-bounds picks");
+});
+
+test("pick() must not disturb the visible frame: blend off during the ID pass, all state restored", () => {
+    const gl = makeGL();
+    const sink = createPointSink(gl, { capacity: 1000 });
+    sink.resize(640, 480);
+    sink.draw(100);
+
+    // Simulate the demo's additive blending + transparent clear colour.
+    gl.enable(gl.BLEND);
+    gl.clearColor(0, 0, 0, 0);
+    gl.__boundFbo = null;                            // drawing to the canvas
+    const callsBefore = gl.calls.length;
+
+    gl.__pixel = [7, 0, 0, 255];
+    assert.equal(sink.pick(100, 100), 7);
+
+    const after = gl.calls.slice(callsBefore);
+    const idx = (pred) => after.findIndex(pred);
+    const iDisableBlend = idx((c) => c.name === "disable" && c.args[0] === gl.BLEND);
+    const iDraw = idx((c) => c.name === "drawArrays");
+    const iEnableBlend = idx((c) => c.name === "enable" && c.args[0] === gl.BLEND);
+    assert.ok(iDisableBlend >= 0 && iDisableBlend < iDraw, "blending is OFF for the ID pass (ids must not blend)");
+    assert.ok(iEnableBlend > iDraw, "blending restored after the pass");
+    assert.equal(gl.__blend, true, "BLEND left enabled, as it was");
+
+    // ID target cleared to white BEFORE the draw, and the canvas' clear colour put back.
+    const clearWhite = after.find((c) => c.name === "clearColor" && c.args[0] === 1);
+    assert.ok(clearWhite, "ID target cleared to white (miss)");
+    assert.deepEqual(gl.__clearColor, [0, 0, 0, 0], "the app's clear colour is restored");
+    assert.equal(gl.__boundFbo, null, "the previously bound framebuffer (the canvas) is rebound");
+});
+
+test("pick() honours the scissor rect, so a hover cannot hit a neighbouring pane", () => {
+    const gl = makeGL();
+    const sink = createLineSink(gl, { capacity: 1000 });
+    sink.resize(1000, 800);
+    sink.setScissor(0, 0, 500, 800);        // left pane only
+    sink.draw(200);
+
+    const before = gl.calls.length;
+    gl.__pixel = [5, 0, 0, 255];
+    sink.pick(100, 100);
+    const after = gl.calls.slice(before);
+
+    const iClear = after.findIndex((c) => c.name === "clear");
+    const iScissorOn = after.findIndex((c) => c.name === "enable" && c.args[0] === gl.SCISSOR_TEST);
+    const iDraw = after.findIndex((c) => c.name === "drawArraysInstanced");
+    assert.ok(iClear >= 0 && iClear < iScissorOn,
+        "the WHOLE ID target is cleared before the scissor goes on (else stale ids survive outside the pane)");
+    assert.ok(iScissorOn < iDraw, "the ID draw is clipped to the pane");
+});
+
+test("a lost context drops the shared programs so they are relinked on restore", () => {
+    const gl = makeGL();
+    const canvas = { listeners: {}, addEventListener(t, fn) { this.listeners[t] = fn; }, removeEventListener() {} };
+    gl.canvas = canvas;
+
+    const sink = createPointSink(gl, { capacity: 100 });
+    assert.equal(gl.count("linkProgram"), 1);
+
+    canvas.listeners.webglcontextlost({ preventDefault() {} });
+    assert.equal(sink.isContextLost(), true);
+
+    canvas.listeners.webglcontextrestored();
+    assert.equal(sink.isContextLost(), false);
+    assert.equal(gl.count("linkProgram"), 2, "program relinked after restore (the old one died with the context)");
 });
