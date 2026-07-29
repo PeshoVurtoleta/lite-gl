@@ -1,7 +1,7 @@
 {
   "name": "@zakkster/lite-gl",
-  "version": "1.3.0",
-  "description": "Signal-native instanced primitive renderer: project ~1M points/quads/lines from reactive inputs, upload only what changed, draw in one instanced call. Zero-GC core (renderer-agnostic, tested) + a browser WebGL2 backend. Built for reactive charts at 1M points, not as a Pixi competitor.",
+  "version": "1.4.0",
+  "description": "Signal-native instanced primitive renderer: project ~1M points/quads/lines from reactive inputs, upload only what changed, draw in one instanced call. Deep-zoom precision via a GPU camera with double-emulated world coordinates. Zero-GC core + a browser WebGL2 backend.",
   "type": "module",
   "main": "./GL.js",
   "module": "./GL.js",
@@ -36,13 +36,13 @@
     "test:smoke": "playwright test test/smoke.spec.mjs"
   },
   "peerDependencies": {
-    "@zakkster/lite-signal": ">=1.5.0-alpha",
-    "@zakkster/lite-raf": "^1.0.0"
+    "@zakkster/lite-raf": "^1.0.0",
+    "@zakkster/lite-signal": ">=1.5.0-alpha"
   },
   "devDependencies": {
-    "@zakkster/lite-signal": "1.6.0-preview.2",
+    "@playwright/test": "^1.49.0",
     "@zakkster/lite-raf": "^1.1.0",
-    "@playwright/test": "^1.49.0"
+    "@zakkster/lite-signal": ">=1.6.0-preview.2"
   },
   "overrides": {
     "@zakkster/lite-raf": {
@@ -64,7 +64,12 @@
     "signals",
     "gpu",
     "esm",
-    "lite-signal"
+    "lite-signal",
+    "deep-zoom",
+    "precision",
+    "float32",
+    "time-series",
+    "relative-to-eye"
   ],
   "author": "Zahary Shinikchiev <shinikchiev@yahoo.com>",
   "license": "MIT",

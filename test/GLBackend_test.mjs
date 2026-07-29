@@ -9,8 +9,8 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPointSink, createQuadSink, createLineSink } from "../GLBackend.js";
-import { createField, LAYOUT } from "../GL.js";
+import { createPointSink, createQuadSink, createLineSink, createPointHiSink } from "../GLBackend.js";
+import { createField, LAYOUT, writePointHi, hiOf, loOf } from "../GL.js";
 
 // Minimal WebGL2 mock: distinct numeric enums, fake objects for create*, a call log.
 // opts.compileOK / opts.linkOK drive the failure paths; opts.log is the info log.
@@ -687,4 +687,192 @@ test("a lost context drops the shared programs so they are relinked on restore",
     canvas.listeners.webglcontextrestored();
     assert.equal(sink.isContextLost(), false);
     assert.equal(gl.count("linkProgram"), 2, "program relinked after restore (the old one died with the context)");
+});
+
+// ===========================================================================
+//  v1.4.0 -- createPointHiSink (world coords, GPU camera)
+// ===========================================================================
+
+/** All uniform2f calls recorded on the mock, as [locTag, x, y]. */
+function uniform2fCalls(gl) {
+    return gl.calls.filter((c) => c.name === "uniform2f").map((c) => c.args);
+}
+
+test("pointHi: binds four attributes at stride 40 (hi, lo, size, color)", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 16 });
+    const ptrs = gl.calls.filter((c) => c.name === "vertexAttribPointer").map((c) => c.args);
+    assert.equal(ptrs.length, 4);
+    assert.deepEqual(ptrs[0].slice(0, 2), [0, 2]);   // a_posHi vec2
+    assert.deepEqual(ptrs[1].slice(0, 2), [1, 2]);   // a_posLo vec2
+    assert.deepEqual(ptrs[2].slice(0, 2), [2, 1]);   // a_size float
+    assert.deepEqual(ptrs[3].slice(0, 2), [3, 4]);   // a_color vec4
+    for (const p of ptrs) assert.equal(p[4], 40, "stride 40 bytes = 10 floats");
+    assert.deepEqual(ptrs.map((p) => p[5]), [0, 8, 16, 20], "byte offsets");
+    sink.dispose();
+});
+
+test("pointHi: no vertexAttribDivisor -- it is a POINTS draw, not instanced", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 16 });
+    assert.equal(gl.count("vertexAttribDivisor"), 0);
+    const f = createField({ capacity: 16, stride: LAYOUT.POINT_HI });
+    f.push((d, base) => writePointHi(d, base, 1.78e12, 0, 4, 1, 1, 1, 1));
+    f.flush(sink);
+    const draw = gl.find("drawArrays");
+    assert.ok(draw, "drawArrays used");
+    assert.equal(gl.count("drawArraysInstanced"), 0);
+    sink.dispose();
+});
+
+test("pointHi: setCamera splits the world coord in float64 before it touches float32", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 4 });
+    const cam = 1.78e12 + 0.5;
+    sink.setCamera(cam, 10, 2, 3, 100, 200);
+    const c = sink.getCamera();
+    assert.equal(c.hiX, hiOf(cam));
+    assert.equal(c.loX, loOf(cam));
+    assert.equal(c.hiX + c.loX, cam, "hi + lo reconstructs the float64 exactly");
+    assert.equal(c.scaleX, 2);
+    assert.equal(c.scaleY, 3);
+    assert.equal(c.originX, 100);
+    assert.equal(c.originY, 200);
+    sink.dispose();
+});
+
+test("pointHi: origin defaults to the canvas centre and follows resize", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 4 });
+    sink.setCamera(0, 0, 1);
+    sink.resize(800, 600);
+    let c = sink.getCamera();
+    assert.equal(c.originX, 400);
+    assert.equal(c.originY, 300);
+    sink.resize(1000, 500);
+    c = sink.getCamera();
+    assert.equal(c.originX, 500, "origin tracks the new size, not a stale one");
+    assert.equal(c.originY, 250);
+    sink.dispose();
+});
+
+test("pointHi: a single scale argument applies to both axes", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 4 });
+    sink.setCamera(0, 0, 7);
+    const c = sink.getCamera();
+    assert.equal(c.scaleX, 7);
+    assert.equal(c.scaleY, 7);
+    sink.dispose();
+});
+
+test("pointHi: draw() pushes camera uniforms every frame", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 8 });
+    sink.setCamera(1.78e12, 5, 0.5, 0.25, 10, 20);
+    sink.draw(3);
+    const u = uniform2fCalls(gl);
+    // u_resolution, u_cameraHi, u_cameraLo, u_scale, u_origin
+    assert.equal(u.length, 5);
+    assert.deepEqual(u[1].slice(1), [hiOf(1.78e12), hiOf(5)]);
+    assert.deepEqual(u[2].slice(1), [loOf(1.78e12), loOf(5)]);
+    assert.deepEqual(u[3].slice(1), [0.5, 0.25]);
+    assert.deepEqual(u[4].slice(1), [10, 20]);
+    sink.dispose();
+});
+
+test("pointHi: A PAN IS FOUR FLOATS -- no upload, no CPU re-projection", () => {
+    // This is the entire reason the layout exists. With LAYOUT.POINT the camera lives in
+    // project(), so moving it re-writes every instance and re-uploads the dirty range.
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 1000 });
+    const f = createField({ capacity: 1000, stride: LAYOUT.POINT_HI });
+    const t0 = 1.78e12;
+    for (let i = 0; i < 1000; i++) f.push((d, b) => writePointHi(d, b, t0 + i * 1000, i, 2, 1, 1, 1, 1));
+
+    f.flush(sink);                                     // the one and only upload
+    const uploadsAfterSeed = gl.count("bufferSubData");
+    assert.equal(uploadsAfterSeed, 1);
+
+    for (let k = 1; k <= 60; k++) {                    // sixty frames of panning
+        sink.setCamera(t0 + k * 1000, 0, 1e-3);
+        sink.draw(1000);
+    }
+    assert.equal(gl.count("bufferSubData"), uploadsAfterSeed, "sixty pans, zero re-uploads");
+    assert.equal(f.dirtyLo(), -1, "the field never went dirty");
+    sink.dispose();
+});
+
+test("pointHi: the ID pass projects through the SAME camera as the visible pass", () => {
+    // If it does not, the pixel you read back belongs to a different instance than the
+    // one under the cursor, and hover silently lies.
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 8 });
+    sink.setCamera(1.78e12, 5, 0.5, 0.25, 10, 20);
+    sink.draw(4);
+    const visible = uniform2fCalls(gl).slice(1);      // drop u_resolution
+
+    gl.calls.length = 0;
+    sink.pick(2, 2, 4);
+    const picked = uniform2fCalls(gl).slice(1);
+
+    assert.equal(picked.length, 4, "pick pushes cameraHi, cameraLo, scale, origin");
+    for (let i = 0; i < 4; i++) {
+        assert.deepEqual(picked[i].slice(1), visible[i].slice(1), "uniform " + i + " matches");
+    }
+    sink.dispose();
+});
+
+test("pointHi: pick uses a POINTS draw, not an instanced one", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 8 });
+    sink.setCamera(0, 0, 1);
+    sink.draw(4);
+    gl.calls.length = 0;
+    sink.pick(1, 1, 4);
+    assert.ok(gl.count("drawArrays") >= 1);
+    assert.equal(gl.count("drawArraysInstanced"), 0);
+    sink.dispose();
+});
+
+test("pointHi: pick short-circuits out of bounds and on an empty field", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 8 });
+    assert.equal(sink.pick(-1, 0, 4), -1);
+    assert.equal(sink.pick(0, 0, 0), -1);
+    sink.dispose();
+});
+
+test("pointHi: honours scissor, like every other sink", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 8 });
+    sink.setCamera(0, 0, 1);
+    sink.setScissor(10, 20, 100, 50);
+    sink.draw(2);
+    assert.ok(gl.find("scissor"), "scissor applied");
+    sink.clearScissor();
+    gl.calls.length = 0;
+    sink.draw(2);
+    assert.equal(gl.count("scissor"), 0);
+    sink.dispose();
+});
+
+test("pointHi: upload beyond capacity throws with an actionable message", () => {
+    const gl = makeGL();
+    const sink = createPointHiSink(gl, { capacity: 2 });
+    const data = new Float32Array(100);
+    assert.throws(() => sink.upload(data, 0, 100), /exceeds sink capacity \(2 points\)/);
+    sink.dispose();
+});
+
+test("pointHi: shares the program cache and refcounts like the other sinks", () => {
+    const gl = makeGL();
+    const a = createPointHiSink(gl, { capacity: 4 });
+    const linksAfterFirst = gl.count("linkProgram");
+    const b = createPointHiSink(gl, { capacity: 4 });
+    assert.equal(gl.count("linkProgram"), linksAfterFirst, "second sink reuses the program");
+    a.dispose();
+    assert.equal(gl.count("deleteProgram"), 0, "still referenced by b");
+    b.dispose();
+    assert.ok(gl.count("deleteProgram") >= 1, "deleted at zero refs");
 });

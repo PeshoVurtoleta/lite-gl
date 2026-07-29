@@ -55,6 +55,42 @@ export interface LineSink extends GLSink {}
 export function createLineSink(gl: WebGL2RenderingContext, opts: { capacity: number }): LineSink;
 
 /**
+ * A WebGL2 world-space point sink with the camera on the GPU (v1.4, browser-only).
+ *
+ * Renders LAYOUT.POINT_HI fields: coordinates are WORLD values, double-emulated as a
+ * hi/lo float32 pair. The vertex shader computes `(posHi - camHi) + (posLo - camLo)`,
+ * where the high parts cancel exactly, so an epoch-millisecond timestamp survives what
+ * would otherwise be ~131-second float32 quantization.
+ *
+ * The point is not just precision -- it is that the world coordinates upload ONCE.
+ * With the screen-space sinks a pan re-projects every instance on the CPU and re-uploads
+ * the dirty range (~5 ms and 31 MB per frame at 1M points). Here, a pan is `setCamera()`.
+ */
+export interface PointHiSink extends GLSink {
+    /**
+     * Move the camera. Zero allocation, zero upload.
+     *
+     * @param x  world x at the eye (float64 -- a raw epoch-ms timestamp is fine)
+     * @param y  world y at the eye
+     * @param sx world x units -> pixels. Default 1.
+     * @param sy world y units -> pixels. Defaults to `sx`.
+     * @param px pixel x of the eye. Defaults to the canvas centre, and tracks resize.
+     * @param py pixel y of the eye. Defaults to the canvas centre.
+     */
+    setCamera(x: number, y: number, sx?: number, sy?: number, px?: number, py?: number): void;
+
+    /** Current camera, for tests and debugging. Allocates -- not for the frame loop. */
+    getCamera(): {
+        x: number; y: number;
+        hiX: number; hiY: number; loX: number; loY: number;
+        scaleX: number; scaleY: number;
+        originX: number; originY: number;
+    };
+}
+
+export function createPointHiSink(gl: WebGL2RenderingContext, opts: { capacity: number }): PointHiSink;
+
+/**
  * Largest pickable instance index (v1.3). IDs are encoded in 24 bits of RGB and
  * 0xFFFFFF is reserved as the "miss" value, so 0 .. 0xFFFFFE are pickable.
  */

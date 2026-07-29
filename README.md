@@ -232,6 +232,54 @@ restores the framebuffer, clear colour and blend state it found. Call it on a th
 
 ---
 
+### Deep zoom: world coordinates on the GPU (v1.4)
+
+`LAYOUT.POINT`, `QUAD` and `LINE` hold **screen pixels**. That is the contract: `project()` runs in JS (float64) and writes post-camera coordinates, so the float32 field only ever sees small numbers. Relative-to-eye, by construction — which is why precision has never bitten you.
+
+The cost shows up when the camera moves. A one-pixel pan re-projects **every** instance and dirties the whole field: ~5 ms of JS at 1M points, plus a **31 MB re-upload, every frame**. Panning a large field is CPU-bound, and the GPU never even sees a camera.
+
+`LAYOUT.POINT_HI` (v1.4) holds **world coordinates**, uploads once, and puts the camera in the vertex shader:
+
+```js
+import { createField, reactiveField, LAYOUT, writePointHi, needsHiPrecision } from '@zakkster/lite-gl';
+import { createPointHiSink } from '@zakkster/lite-gl/GLBackend.js';
+
+const sink = createPointHiSink(gl, { capacity: 1_000_000 });
+const field = createField({ capacity: 1_000_000, stride: LAYOUT.POINT_HI });
+
+// World coordinates. Raw timestamps — no projection, no camera.
+for (let i = 0; i < n; i++) {
+  field.push((d, base) => writePointHi(d, base, ts[i], value[i], 2, 0.3, 1, 0.6, 1));
+}
+field.flush(sink);          // the one and only upload
+
+// A pan is four floats. No CPU work, no re-upload, no dirty range.
+onPan((t, v, pxPerMs, pxPerUnit) => sink.setCamera(t, v, pxPerMs, pxPerUnit));
+```
+
+**Why the coordinates are split.** float32 carries a 24-bit significand — integers are exact only to 2²⁴ = 16,777,216. A Unix epoch millisecond is ~1.78 × 10¹², where the gap between representable values is **131,072 ms ≈ 2.2 minutes**. Store a raw timestamp in a float32 and a full minute of one-second ticks collapses onto a *single* value. Epoch-seconds is no escape (ULP ≈ 128 s).
+
+So `POINT_HI` splits each coordinate into a hi/lo float32 pair, splits the camera the same way, and the shader computes:
+
+```glsl
+vec2 rel = (a_posHi - u_cameraHi) + (a_posLo - u_cameraLo);
+```
+
+The high parts are float32s of near-identical magnitude, so that subtraction cancels **exactly** (Sterbenz), and the residuals carry the detail. Order matters: subtract *first*. Scale first and the precision is already gone.
+
+**The guarantee, stated honestly.** Error scales with distance **from the eye**, not with absolute magnitude. Anything within a day of the camera round-trips bit-exactly from an epoch-ms timestamp. A point a *year* away is good to ~800 ms — which sounds like a caveat and is the entire point: you only see distant points when you are zoomed **out**, and the pixel grows at exactly the rate the error does. Worst-case error across a 2000 px viewport is **~10⁻⁴ px — at any zoom, at any magnitude**. The naive path degrades with absolute magnitude, and nothing saves you from that.
+
+Not sure whether you need it?
+
+```js
+needsHiPrecision(Date.now(), 1000);  // true  — 1s ticks in epoch-ms
+needsHiPrecision(1e6, 0.5);          // false — ordinary chart coords, use LAYOUT.POINT
+```
+
+**On cameras.** `setCamera()` takes six plain numbers, and that is deliberate — `lite-gl` does not depend on a camera package, and should not. [`@zakkster/lite-camera`](https://github.com/PeshoVurtoleta/lite-camera) is a *game-follow* camera for Canvas2D: deadzone, lookahead, trauma shake, clamped to a world rect, and it emits a `ctx` transform rather than numbers. It has **no zoom at all**, it pins `x ≥ 0`, and its `apply()` does `ctx.translate(-(pos[0] | 0), …)` — a ToInt32 truncation that *wraps* at epoch-ms magnitudes. Every one of those is correct for a platformer and wrong for a chart. Drive `setCamera()` from whatever owns your pan/zoom state; the numeric seam is the integration.
+
+**Use `POINT` for almost everything.** Reach for `POINT_HI` when the *world* coordinates are large — timestamps, geodetic coords, deep-zoom fractals — or when you pan a large field often enough that CPU re-projection is the bottleneck. `PointHiSink` carries the full v1.3 surface: scissor, `pick()`, shared program cache, context-loss recovery. The ID pass projects through the same camera as the visible pass, so hover stays honest at any zoom.
+
 ## License
 
 MIT (c) 2026 Zahary Shinikchiev &lt;shinikchiev@yahoo.com&gt;

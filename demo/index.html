@@ -475,7 +475,7 @@
         <div class="brand">
             <span class="mark">◐</span>
             <span class="pkg">@zakkster/lite-gl</span>
-            <span class="ver">v1.3.0</span>
+            <span class="ver">v1.4.0</span>
         </div>
         <div class="tagline"><span class="dot"></span>oscilloscope · instanced GPU renderer</div>
     </header>
@@ -486,6 +486,7 @@
         <button data-tab="bars"><span class="scene-num">03</span>Quad Spectrum</button>
         <button data-tab="dirty"><span class="scene-num">04</span>Dirty Window</button>
         <button data-tab="split"><span class="scene-num">05</span>Split Scope</button>
+        <button data-tab="deep"><span class="scene-num">06</span>Deep Time</button>
     </nav>
 
     <main>
@@ -804,6 +805,91 @@
                 </section>
             </aside>
         </section>
+
+        <section class="scene" data-scene="deep">
+            <div class="stage" id="deep-stage">
+                <canvas id="deep-canvas"></canvas>
+                <div class="no-webgl" id="deep-nogl">WebGL2 unavailable in this browser.</div>
+                <div class="stage-overlay tl">
+                    <span class="label">left · LAYOUT.POINT · world coords in float32</span>
+                    <span class="label" id="deep-left-note">CPU re-projects every frame</span>
+                </div>
+                <div class="stage-overlay tr">
+                    <span class="label">right · LAYOUT.POINT_HI · GPU camera</span>
+                    <span class="big magenta" id="deep-hit">—</span>
+                </div>
+                <div class="stage-overlay bl">
+                    <span class="label" id="deep-span">viewport spans —</span>
+                </div>
+                <div class="stage-overlay br">
+                    <span class="label">drag to pan · wheel to zoom · hover the right pane</span>
+                </div>
+            </div>
+            <aside class="panel">
+                <div class="panel-head">scene 06 · deep-zoom precision</div>
+                <section>
+                    <p class="help-line">
+                        Two panes, the <strong>same 400k timestamps</strong>. Left holds them as
+                        <strong>single float32 world coordinates</strong> and re-projects on the CPU.
+                        Right uses <code>LAYOUT.POINT_HI</code>: coordinates split hi/lo, uploaded
+                        <strong>once</strong>, camera in the vertex shader.
+                        Zoom in. Watch the left pane <strong>snap onto a lattice</strong> the moment the
+                        float32 ULP exceeds one pixel — and watch its upload counter climb while the
+                        right one never moves again.
+                    </p>
+                    <div class="btn-row">
+                        <button class="btn primary" id="deep-drift" aria-pressed="true">◐ auto-pan</button>
+                        <button class="btn" id="deep-reset">reset view</button>
+                    </div>
+                </section>
+                <section>
+                    <h3>Precision</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">float32 ULP @ camera</div>
+                            <div class="v amber" id="deep-ulp">—</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">ms per pixel</div>
+                            <div class="v cyan" id="deep-mspx">—</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">float32 verdict</div>
+                            <div class="v" id="deep-verdict">—</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">fps</div>
+                            <div class="v green" id="deep-fps">60</div>
+                        </div>
+                    </div>
+                </section>
+                <section>
+                    <h3>Cost of a pan</h3>
+                    <div class="metrics">
+                        <div class="metric">
+                            <div class="k">uploads · POINT</div>
+                            <div class="v magenta" id="deep-up-cpu">0</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">uploads · POINT_HI</div>
+                            <div class="v green" id="deep-up-gpu">1</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">CPU reproject</div>
+                            <div class="v amber" id="deep-cpu-ms">—</div>
+                        </div>
+                        <div class="metric">
+                            <div class="k">MB re-uploaded</div>
+                            <div class="v magenta" id="deep-mb">0</div>
+                        </div>
+                    </div>
+                    <p class="help-line">
+                        The right pane's <code>setCamera()</code> is four floats of uniform. It has not
+                        touched the bus since the first frame.
+                    </p>
+                </section>
+            </aside>
+        </section>
     </main>
 </div>
 
@@ -821,8 +907,8 @@
 
 <script type="module">
   import { signal } from "@zakkster/lite-signal";
-  import { createField, reactiveField, LAYOUT } from "@zakkster/lite-gl";
-  import { createPointSink, createQuadSink, createLineSink } from "@zakkster/lite-gl/backend";
+  import { createField, reactiveField, LAYOUT, writePointHi, f32Ulp, needsHiPrecision } from "@zakkster/lite-gl";
+  import { createPointSink, createQuadSink, createLineSink, createPointHiSink } from "@zakkster/lite-gl/backend";
 
   // ─── hoisted consts + cached lookups (zero GC) ───────────────────────────
   const TAU = Math.PI * 2;
@@ -964,6 +1050,7 @@
         resize() {
         }, start() {
         }, stop() {
+        }, destroy() {
         },
       };
     }
@@ -1109,6 +1196,10 @@
         running = false;
         if (raf) cancelAnimationFrame(raf);
       },
+      destroy() {
+        this.stop();
+        controls.abort();   // release this scene's pointer/wheel/input listeners
+      },
     };
   })();
 
@@ -1129,6 +1220,7 @@
         resize() {
         }, start() {
         }, stop() {
+        }, destroy() {
         },
       };
     }
@@ -1286,6 +1378,10 @@
         running = false;
         if (raf) cancelAnimationFrame(raf);
       },
+      destroy() {
+        this.stop();
+        controls.abort();   // release this scene's pointer/wheel/input listeners
+      },
     };
   })();
 
@@ -1304,6 +1400,7 @@
         resize() {
         }, start() {
         }, stop() {
+        }, destroy() {
         },
       };
     }
@@ -1316,6 +1413,7 @@
     const sink = createQuadSink(gl, { capacity: CAP });
 
     let W = 1, H = 1, count = 128, speed = 1.0, phase = 0;
+    fld.setCount(count * 2);   // seed the initial instance count; the slider updates it thereafter
     let running = false, raf = 0, last = performance.now(), fpsT = last, fpsN = 0, hudTick = 0;
 
     function layout() {
@@ -1348,7 +1446,9 @@
         data[bc + 7] = 0.66;
         data[bc + 8] = 1.0;   // magenta caps
       }
-      fld.setCount(count * 2);
+      // NOTE: setCount lives in the $n slider handler, not here. The instance count
+      // only changes when the bar count changes; the *geometry* changes every frame,
+      // so touchAll() (the dirty-range mark) is the only per-frame call needed.
       fld.touchAll();
     }
 
@@ -1356,6 +1456,7 @@
     $n.addEventListener("input", () => {
       count = +$n.value;
       $nV.textContent = count;
+      fld.setCount(count * 2);   // instance count changes only here
     }, { signal: controls.signal });
     $speed.addEventListener("input", () => {
       speed = +$speed.value / 10;
@@ -1406,6 +1507,10 @@
         running = false;
         if (raf) cancelAnimationFrame(raf);
       },
+      destroy() {
+        this.stop();
+        controls.abort();   // release this scene's pointer/wheel/input listeners
+      },
     };
   })();
 
@@ -1425,6 +1530,7 @@
         resize() {
         }, start() {
         }, stop() {
+        }, destroy() {
         },
       };
     }
@@ -1553,6 +1659,10 @@
         running = false;
         if (raf) cancelAnimationFrame(raf);
       },
+      destroy() {
+        this.stop();
+        controls.abort();   // release this scene's pointer/wheel/input listeners
+      },
     };
   })();
 
@@ -1573,6 +1683,7 @@
         resize() {
         }, start() {
         }, stop() {
+        }, destroy() {
         },
       };
     }
@@ -1845,11 +1956,256 @@
         running = false;
         if (raf) cancelAnimationFrame(raf);
       },
+      destroy() {
+        this.stop();
+        ac.abort();   // release this scene's pointer/input listeners
+      },
     };
   })();
 
   // ─── tabs ────────────────────────────────────────────────────────────────
-  const scenes = { field, lorenz, bars, dirty, split };
+  // ── Scene 06 · Deep Time ───────────────────────────────────────────────────
+  // Same 400k timestamps, two pipelines, side by side in one context via scissor.
+  //
+  //   LEFT   LAYOUT.POINT. World coords forced through a single float32 (exactly what
+  //          happens if you put a raw epoch-ms in a float32 buffer), re-projected on the
+  //          CPU every frame the camera moves, re-uploading the dirty range each time.
+  //   RIGHT  LAYOUT.POINT_HI. Coords split hi/lo, uploaded ONCE, camera in the shader.
+  //
+  // Zoom past the float32 cliff and the left pane snaps onto a lattice while its upload
+  // counter climbs. The right pane has not touched the bus since the first frame.
+  const deep = (() => {
+    const $canvas = $("deep-canvas"), $nogl = $("deep-nogl");
+    const $ulp = $("deep-ulp"), $mspx = $("deep-mspx"), $verdict = $("deep-verdict");
+    const $fps = $("deep-fps"), $span = $("deep-span"), $hit = $("deep-hit");
+    const $upCpu = $("deep-up-cpu"), $upGpu = $("deep-up-gpu");
+    const $cpuMs = $("deep-cpu-ms"), $mb = $("deep-mb");
+    const $drift = $("deep-drift"), $reset = $("deep-reset");
+
+    const gl = $canvas.getContext("webgl2", { antialias: false, alpha: true });
+    if (!gl) {
+      $nogl.setAttribute("data-active", "");
+      return { resize() {}, start() {}, stop() {}, destroy() {} };
+    }
+    gl.clearColor(0, 0, 0, 0);
+    gl.enable(gl.BLEND);
+    gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
+
+    const N = 400_000;
+    const T0 = 1.78e12;              // a real epoch-ms magnitude — this is the whole point
+    const DT_MS = 1000;              // one-second ticks
+
+    // Source data in float64. Never rounded until it reaches a pipeline.
+    // The value axis is a BOUNDED oscillation (a few summed sines), not a random walk:
+    // a random walk drifts without limit, so vScale can't be chosen and the points wander
+    // off the top of the viewport. This stays within about +/-10.
+    const ts = new Float64Array(N);
+    const vs = new Float64Array(N);
+    const V_HALF = 11;              // signal stays within +/- this; vScale is derived from it
+    for (let i = 0; i < N; i++) {
+      ts[i] = T0 + i * DT_MS;
+      const u = i / N;
+      vs[i] = Math.sin(i * 0.002) * 4
+            + Math.sin(i * 0.0005) * 3
+            + Math.sin(i * 0.011) * 1.5
+            + Math.sin(u * TAU * 3) * 2
+            + (Math.random() - 0.5) * 0.6;   // a little grain, still bounded
+    }
+
+    const cpuFld = createField({ capacity: N, stride: LAYOUT.POINT });
+    const hiFld = createField({ capacity: N, stride: LAYOUT.POINT_HI });
+    const cpuSink = createPointSink(gl, { capacity: N });
+    const hiSink = createPointHiSink(gl, { capacity: N });
+
+    // The HI field is written ONCE, in world coordinates. writePointHi does the split.
+    for (let i = 0; i < N; i++) {
+      hiFld.push((d, b) => writePointHi(d, b, ts[i], vs[i], 2.0, 0.35, 1.0, 0.62, 0.85));
+    }
+
+    // Camera. camT is an epoch-ms timestamp held in float64.
+    let camT = T0 + (N * DT_MS) * 0.5;
+    let camV = 0;
+    let msPerPx = 4_000;             // start zoomed out: ~4s per pixel
+    let drift = true;
+    let driftDir = 1;                // auto-pan direction; flips at the data edges
+
+    const F32 = Math.fround;
+    let W = 0, H = 0, halfW = 0;
+    let cpuUploads = 0, cpuBytes = 0, cpuMs = 0;
+    let hoverX = -1, hoverY = -1, pickPending = false, lastHit = -1;
+
+    // The CPU pipeline. This is the honest naive path: a world coordinate that has been
+    // through a float32, then projected. Every camera change re-runs the whole thing.
+    function reprojectCPU() {
+      const t0 = performance.now();
+      const d = cpuFld.data;
+      const scale = 1 / msPerPx;                 // px per ms
+      const camF = F32(camT);                    // <- the coordinate enters float32 here
+      const ox = halfW * 0.5;                    // centre of the LEFT pane
+      const oy = H * 0.5;
+      const vScale = H / (V_HALF * 2.4);         // fit +/-V_HALF with a little headroom
+      for (let i = 0; i < N; i++) {
+        const b = i * 8;
+        // F32 on both operands and on the difference: exactly what a float32 buffer holds.
+        d[b] = F32(F32(ts[i]) - camF) * scale + ox;
+        d[b + 1] = oy - (vs[i] - camV) * vScale;
+        d[b + 2] = 2.0;
+        d[b + 3] = 1.0; d[b + 4] = 0.42; d[b + 5] = 0.62; d[b + 6] = 0.85;
+      }
+      cpuFld.setCount(N);
+      cpuMs = performance.now() - t0;
+    }
+
+    // The GPU pipeline. This is the entire per-frame cost of a pan.
+    function setHiCamera() {
+      const vScale = H / (V_HALF * 2.4);
+      hiSink.setCamera(camT, camV, 1 / msPerPx, -vScale, halfW + halfW * 0.5, H * 0.5);
+    }
+
+    let raf = 0, running = false, last = 0, frames = 0, hudAt = 0, seeded = false;
+
+    function loop(now) {
+      if (!running) return;
+      raf = requestAnimationFrame(loop);
+
+      if (drift) {
+        camT += driftDir * msPerPx * 0.6;
+        // Bounce inside the data so the camera never wanders off into empty space.
+        const lo = T0 + N * DT_MS * 0.15;
+        const hi = T0 + N * DT_MS * 0.85;
+        if (camT > hi) { camT = hi; driftDir = -1; }
+        else if (camT < lo) { camT = lo; driftDir = 1; }
+      }
+
+      gl.clear(gl.COLOR_BUFFER_BIT);
+
+      // ---- LEFT pane: CPU projection + full re-upload, every single frame ----
+      reprojectCPU();
+      cpuSink.setScissor(0, 0, halfW, H);
+      cpuFld.flush(cpuSink);
+      cpuUploads++;
+      cpuBytes += N * LAYOUT.POINT * 4;
+
+      // ---- RIGHT pane: four floats. No upload. Ever. ----
+      setHiCamera();
+      hiSink.setScissor(halfW, 0, W - halfW, H);
+      if (!seeded) { hiFld.flush(hiSink); seeded = true; }   // the one and only upload
+      else hiSink.draw(N);
+
+      if (pickPending && hoverX >= halfW) {
+        pickPending = false;
+        lastHit = hiSink.pick(hoverX, hoverY, N);
+      }
+
+      frames++;
+      if (now - hudAt >= 100) {                   // HUD at 10Hz — no toFixed in the hot loop
+        const ulp = f32Ulp(camT);
+        $ulp.textContent = ulp >= 1000 ? (ulp / 1000).toFixed(1) + " s" : ulp.toFixed(0) + " ms";
+        $mspx.textContent = msPerPx >= 1000 ? (msPerPx / 1000).toFixed(2) + " s" : msPerPx.toFixed(0) + " ms";
+
+        const dead = needsHiPrecision(camT, msPerPx);
+        $verdict.textContent = dead ? "BROKEN" : "ok";
+        $verdict.className = dead ? "v magenta" : "v green";
+
+        const spanMs = W * 0.5 * msPerPx;
+        $span.textContent = "viewport spans " + fmtSpan(spanMs) + " · " + N.toLocaleString() + " points";
+
+        $upCpu.textContent = cpuUploads.toLocaleString();
+        $upGpu.textContent = "1";
+        $cpuMs.textContent = cpuMs.toFixed(1) + " ms";
+        $mb.textContent = (cpuBytes / 1048576).toFixed(0);
+        $hit.textContent = lastHit < 0 ? "—" : "#" + lastHit;
+        $fps.textContent = String(Math.round((frames * 1000) / (now - hudAt)));
+        frames = 0; hudAt = now;
+      }
+      last = now;
+    }
+
+    function fmtSpan(ms) {
+      if (ms < 1000) return ms.toFixed(0) + " ms";
+      if (ms < 60_000) return (ms / 1000).toFixed(1) + " s";
+      if (ms < 3.6e6) return (ms / 60_000).toFixed(1) + " min";
+      if (ms < 8.64e7) return (ms / 3.6e6).toFixed(1) + " h";
+      if (ms < 3.15e10) return (ms / 8.64e7).toFixed(1) + " days";
+      return (ms / 3.15e10).toFixed(1) + " years";
+    }
+
+    const ac = new AbortController();
+    const sig = ac.signal;
+    let canvasLeft = 0, canvasTop = 0;
+
+    let dragging = false, dragX = 0;
+    $canvas.addEventListener("pointerdown", (e) => {
+      dragging = true; dragX = e.clientX;
+      $canvas.setPointerCapture(e.pointerId);
+    }, { signal: sig });
+
+    $canvas.addEventListener("pointermove", (e) => {
+      hoverX = (e.clientX - canvasLeft) * DPR;
+      hoverY = (e.clientY - canvasTop) * DPR;
+      pickPending = true;
+      if (!dragging) return;
+      camT -= (e.clientX - dragX) * DPR * msPerPx;
+      dragX = e.clientX;
+    }, { signal: sig });
+
+    $canvas.addEventListener("pointerup", (e) => {
+      dragging = false;
+      $canvas.releasePointerCapture(e.pointerId);
+    }, { signal: sig });
+
+    $canvas.addEventListener("wheel", (e) => {
+      e.preventDefault();
+      // Zoom about the cursor so you can dive into a specific tick.
+      msPerPx *= Math.exp(e.deltaY * 0.0015);
+      msPerPx = Math.min(4e6, Math.max(0.05, msPerPx));
+    }, { signal: sig, passive: false });
+
+    $drift.addEventListener("click", () => {
+      drift = !drift;
+      $drift.setAttribute("aria-pressed", drift ? "true" : "false");
+      $drift.classList.toggle("primary", drift);
+    }, { signal: sig });
+
+    $reset.addEventListener("click", () => {
+      camT = T0 + (N * DT_MS) * 0.5;
+      camV = 0;
+      msPerPx = 4_000;
+    }, { signal: sig });
+
+    function resize() {
+      const r = $canvas.getBoundingClientRect();
+      canvasLeft = r.left; canvasTop = r.top;
+      W = Math.max(2, (r.width * DPR) | 0);
+      H = Math.max(2, (r.height * DPR) | 0);
+      halfW = (W * 0.5) | 0;
+      $canvas.width = W; $canvas.height = H;
+      cpuSink.resize(W, H);
+      hiSink.resize(W, H);
+    }
+
+    return {
+      resize,
+      start() {
+        if (running) return;
+        running = true; last = 0; hudAt = performance.now(); frames = 0;
+        raf = requestAnimationFrame(loop);
+      },
+      stop() {
+        running = false;
+        if (raf) cancelAnimationFrame(raf);
+        raf = 0;
+      },
+      destroy() {
+        this.stop();
+        ac.abort();     // pointer/drag/wheel listeners on the canvas
+        cpuSink.dispose();
+        hiSink.dispose();
+      },
+    };
+  })();
+
+  const scenes = { field, lorenz, bars, dirty, split, deep };
   let current = "field";
 
   function activate(tab) {
@@ -1877,11 +2233,11 @@
 
   window.addEventListener("resize", () => scenes[current].resize());
   window.addEventListener("pagehide", () => {
-    field.stop();
-    lorenz.stop();
-    bars.stop();
-    dirty.stop();
-    split.stop();
+    // Full teardown, not just stop(): abort each scene's AbortController so its
+    // pointer/wheel/input listeners are released, and dispose GL resources. Harmless
+    // in this single-page demo where nodes live forever, but this is the pattern to
+    // copy into a component that mounts and unmounts.
+    for (const name of Object.keys(scenes)) scenes[name].destroy();
   });
 
   // boot the active scene

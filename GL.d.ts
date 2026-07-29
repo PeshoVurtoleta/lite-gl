@@ -70,3 +70,57 @@ export interface Driver {
 }
 
 export function createDriver(reg: SignalRegistry): Driver;
+
+// === v1.4.0: deep-zoom precision ===========================================
+
+/**
+ * Stride presets.
+ *
+ * POINT / QUAD / LINE hold **screen pixels** -- `project()` bakes the camera in on the
+ * CPU (in float64), so the float32 field only ever sees small numbers. That is the
+ * relative-to-eye contract, and it is why precision has never been an issue. The cost:
+ * every camera change re-projects every instance and re-uploads the dirty range.
+ *
+ * POINT_HI holds **world coordinates**, double-emulated as a hi/lo float32 pair, and
+ * moves the camera into the vertex shader. Upload once; a pan becomes a uniform update.
+ */
+export const LAYOUT: {
+    readonly POINT: 8;
+    readonly QUAD: 9;
+    readonly LINE: 9;
+    readonly POINT_HI: 10;
+};
+
+/** The gap between representable float32 values at magnitude `v`. */
+export function f32Ulp(v: number): number;
+
+/**
+ * Does this coordinate range need LAYOUT.POINT_HI?
+ *
+ * @param maxAbsCoord Largest absolute world coordinate you will hold.
+ * @param resolution  Smallest difference that must stay distinguishable.
+ * @example needsHiPrecision(Date.now(), 1000) // true -- epoch-ms ULP is ~131 s
+ */
+export function needsHiPrecision(maxAbsCoord: number, resolution: number): boolean;
+
+/** High part of a float64: the nearest float32. */
+export function hiOf(v: number): number;
+
+/** Low part: the residual after the high part. Exact -- `hiOf(v) + loOf(v) === v`. */
+export function loOf(v: number): number;
+
+/**
+ * Write one LAYOUT.POINT_HI instance. `x`/`y` are float64 WORLD coordinates -- pass the
+ * raw timestamp, not a projected pixel. Zero allocation; writes 10 floats at `base`.
+ */
+export function writePointHi(
+    data: Float32Array,
+    base: number,
+    x: number,
+    y: number,
+    size: number,
+    r: number,
+    g: number,
+    b: number,
+    a: number,
+): void;

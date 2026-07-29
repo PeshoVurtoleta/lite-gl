@@ -19,7 +19,8 @@
 <canvas id="c" width="64" height="64"></canvas>
 
 <script type="module">
-import { createPointSink } from "../GLBackend.js";
+import { createPointSink, createPointHiSink } from "../GLBackend.js";
+import { writePointHi } from "../GL.js";
 
 const checks = [];
 const add = (name, ok, detail) => checks.push({ name, ok, detail: detail || "" });
@@ -125,6 +126,40 @@ async function run() {
     }
 
     sink.dispose();
+
+    // 5) POINT_HI (v1.4.0): world coordinates + GPU camera. This is the path that a
+    //    mock-GL unit test cannot cover -- it only fails when a real driver LINKS the
+    //    shaders. Both the visible program and the ID-pick program must link; pick()
+    //    is what compiles pointHiPick, and a v_id type mismatch (int vs uint) between
+    //    its VS and PICK_FS surfaces only here.
+    const hi = createPointHiSink(gl, { capacity: 1024 });
+    hi.resize(SIZE, SIZE);
+    add("pointHi sink constructs + visible program links", gl.getError() === 0);
+
+    // A big epoch-ms-scale world coordinate, camera parked on it, 1 world unit = 1px,
+    // eye at the canvas centre -> the point lands dead centre.
+    const T0 = 1.78e12;
+    const hiRow = new Float32Array(10);
+    writePointHi(hiRow, 0, T0, 0, 24, 1, 1, 1, 1);
+    hi.setCamera(T0, 0, 1, 1, 32, 32);
+    clear(); hi.upload(hiRow, 0, 10); hi.draw(1);
+    add("pointHi renders through the GPU camera", lit(32, 32) && gl.getError() === 0,
+        "centre RGBA = " + Array.from(read(32, 32)).join(","));
+
+    // The crash reproducer: pick() links pointHiPick (PICK_POINT_HI_VS + PICK_FS).
+    // Before the fix this threw "Types of varying 'v_id' differ between VERTEX and
+    // FRAGMENT shaders" at link time. Now it must link and return instance 0.
+    let hiPick = -2, pickThrew = "";
+    try {
+        hiPick = hi.pick(32, 32, 1);
+    } catch (e) {
+        pickThrew = String(e && e.message || e);
+    }
+    add("pointHi pick pass links (no v_id int/uint mismatch)", pickThrew === "", pickThrew);
+    add("pointHi pick returns the hit instance", hiPick === 0, "pick(32,32) = " + hiPick);
+    add("pointHi pick misses empty space", hi.pick(2, 2, 1) === -1);
+
+    hi.dispose();
     finish();
 }
 

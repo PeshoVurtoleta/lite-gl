@@ -136,3 +136,51 @@ blend disabled during the ID pass, framebuffer/clear-colour/blend restored, scis
 A frame re-projects in place and uploads only the dirty float window -- no
 allocation. Verified: 60 frames of full 1M-point re-projection with the backing
 Float32Array reference unchanged and the engine pool counters flat.
+
+## v1.4.0 — deep-zoom precision (LAYOUT.POINT_HI + createPointHiSink)
+
+THE CONTRACT (now explicit). LAYOUT.POINT / QUAD / LINE hold SCREEN PIXELS. project() runs in
+JS float64 and writes post-camera pixel coordinates, so the float32 field only ever sees small
+numbers — relative-to-eye by construction. Precision is a non-issue. The cost: every camera
+change re-projects every instance on the CPU and re-uploads the dirty range (~5 ms + 31 MB per
+frame at 1M points).
+
+LAYOUT.POINT_HI (stride 10: xHi, yHi, xLo, yLo, size, r, g, b, a, _pad) holds WORLD coordinates,
+uploaded once, with the camera in the vertex shader. A pan is sink.setCamera(x, y, sx, sy, px, py)
+— four floats of uniform, zero CPU, zero upload.
+
+WHY DOUBLE-EMULATION. float32 has a 24-bit significand: integers exact only to 2^24 = 16,777,216.
+Epoch-ms is ~1.78e12 -> ULP = 131,072 ms ≈ 2.2 minutes. A minute of 1-second ticks collapses onto
+ONE float32 value. Epoch-seconds is no escape (ULP ~128 s).
+
+THE SCHEME. Split each float64 coord into hi = fround(v) and lo = fround(v - hi). The shader does
+  rel = (a_posHi - u_cameraHi) + (a_posLo - u_cameraLo)
+The high parts are float32s of near-identical magnitude, so the subtraction cancels EXACTLY
+(Sterbenz lemma) and the residuals carry the detail. Do NOT reorder this — scale first, subtract
+later, and the precision is already gone. `precision highp float` is required.
+
+THE GUARANTEE. Error scales with distance FROM THE EYE, not absolute magnitude. Bit-exact within
+a day of the camera at epoch-ms; ~800 ms error a year out — which is fine, because you only see
+distant points when zoomed out and the pixel grows at the same rate. Worst-case sub-pixel error
+across a 2000px viewport: ~1e-4 px, at ANY zoom, at ANY absolute magnitude.
+
+HELPERS (GL.js, GL-agnostic):
+  writePointHi(data, base, x, y, size, r, g, b, a)  — packs one instance, does the split, zero alloc
+  hiOf(v) / loOf(v)                                 — the split; hiOf(v) + loOf(v) === v exactly
+  f32Ulp(v)                                         — float32 quantization step at magnitude v
+  needsHiPrecision(maxAbsCoord, resolution)         — "do I need this layout?" guardrail
+                                                      needsHiPrecision(Date.now(), 1000) === true
+
+PICKING. The ID pass pushes the SAME camera uniforms as the visible pass. It must — otherwise the
+pixel you read back belongs to a different instance than the one under the cursor.
+
+CAMERAS. lite-gl deliberately has NO camera dependency, peer or otherwise. setCamera(x, y, sx, sy,
+px, py) takes six plain numbers -- drive it from whatever owns your pan/zoom state.
+@zakkster/lite-camera is a game-follow camera for Canvas2D (deadzone, lookahead, trauma shake,
+clamped to a world rect, emits a ctx transform). It has NO zoom, pins x >= 0, and its apply() does
+ctx.translate(-(pos[0] | 0), ...) -- a ToInt32 truncation that WRAPS at epoch-ms magnitudes. Correct
+for a platformer, wrong for a chart. lite-camera-pro adds five more deps on top. Do not couple them.
+
+WHEN TO USE WHICH. POINT for anything that fits comfortably in float32 after projection (almost
+everything). POINT_HI when the WORLD coordinates are large: timestamps, geodetic coords, deep-zoom
+fractals — or when you pan/zoom a large field often enough that CPU re-projection is the bottleneck.

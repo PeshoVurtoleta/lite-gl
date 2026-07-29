@@ -1,5 +1,5 @@
 /**
- * @zakkster/lite-gl v1.3.0 -- signal-native instanced primitive renderer.
+ * @zakkster/lite-gl v1.4.0 -- signal-native instanced primitive renderer.
  * -----------------------------------------------------------------------------
  * NOT a Pixi/Three competitor. A narrow, zero-GC engine for ONE thing: project a
  * large set of instanced primitives (points / quads / lines) from reactive inputs
@@ -190,9 +190,103 @@ const _default = createDriver({ effect: _effect, onCleanup: _onCleanup, dispose:
 
 export const reactiveField = _default.reactiveField;
 
-// Stride presets for the built-in primitive layouts (x, y, then per-primitive attrs).
+// Stride presets for the built-in primitive layouts.
+//
+// POINT / QUAD / LINE hold **screen pixels**. That is the contract: `project()` runs in
+// JS (float64) and writes post-camera pixel coordinates, so the float32 field only ever
+// sees small numbers. Precision is a non-issue -- but every camera change re-projects
+// every instance on the CPU and re-uploads the dirty range.
+//
+// POINT_HI (v1.4.0) holds **world coordinates**, split hi/lo, and moves the camera onto
+// the GPU. Upload once; pan and zoom become a uniform update. See below.
 export const LAYOUT = {
-    POINT: 8,   // x, y, size, r, g, b, a, _pad
-    QUAD: 9,    // x, y, w, h, rot, r, g, b, a
-    LINE: 9,    // x0, y0, x1, y1, width, r, g, b, a
+    POINT: 8,      // x, y, size, r, g, b, a, _pad                 -- screen px
+    QUAD: 9,       // x, y, w, h, rot, r, g, b, a                  -- screen px
+    LINE: 9,       // x0, y0, x1, y1, width, r, g, b, a            -- screen px
+    POINT_HI: 10,  // xHi, yHi, xLo, yLo, size, r, g, b, a, _pad   -- WORLD, double-emulated
 };
+
+// === v1.4.0: DEEP-ZOOM PRECISION ===========================================
+//
+// THE PROBLEM. float32 carries a 24-bit significand: integers are exact only up to
+// 2^24 = 16,777,216. A Unix epoch millisecond is ~1.78e12, which lands the ULP at
+// 131,072 ms -- about 2.2 minutes. Store epoch-ms in a float32 and a full minute of
+// one-second ticks collapses onto a SINGLE representable value. Epoch-seconds is no
+// escape either (~1.78e9, ULP ~128 s). Any time-series that holds raw timestamps in
+// world space is already past the cliff.
+//
+// THE FIX. Relative-to-eye, done properly: split each float64 coordinate into two
+// float32s (a high part and the residual), split the camera the same way, and let the
+// GPU compute
+//
+//     rel = (posHi - camHi) + (posLo - camLo)
+//
+// The high parts are float32s of near-identical magnitude, so `posHi - camHi` cancels
+// EXACTLY (Sterbenz). The residuals then carry the detail.
+//
+// THE GUARANTEE, precisely. Error scales with distance FROM THE EYE, not with absolute
+// magnitude. A point within a day of the camera round-trips bit-exactly from an epoch-ms
+// timestamp; a point a year away is good to ~800 ms. That sounds like a caveat and is
+// actually the whole point: you only see far-away points when you are zoomed OUT, and the
+// pixel gets bigger at exactly the rate the error does. Worst-case error across a 2000px
+// viewport is ~1e-4 px -- at ANY zoom level, at ANY absolute magnitude. The naive path
+// degrades with absolute magnitude, which nothing can save you from.
+//
+// WHY BOTHER, when project() could just keep doing this on the CPU? Because it already
+// does, and that is exactly what caps the 1M-point pan. Re-projecting 1M points costs
+// ~5 ms/frame of pure JS and dirties the whole field -- a 31 MB re-upload, every frame,
+// for a camera that moved one pixel. With POINT_HI the world coordinates upload ONCE and
+// a pan is four floats of uniform. Zero CPU, zero upload.
+//
+// Use POINT for anything that fits comfortably in float32 after projection (which is
+// almost everything). Reach for POINT_HI when the *world* coordinates are large --
+// timestamps, geodetic coords, deep-zoom fractals.
+
+/** The gap between representable float32 values at magnitude `v`. */
+export function f32Ulp(v) {
+    const a = Math.abs(Math.fround(v));
+    if (a === 0 || !Number.isFinite(a)) return 0;
+    return Math.pow(2, Math.floor(Math.log2(a)) - 23);
+}
+
+/**
+ * Does this coordinate range need POINT_HI?
+ *
+ * @param {number} maxAbsCoord  Largest absolute world coordinate you will hold.
+ * @param {number} resolution   Smallest difference you need to stay distinguishable
+ *                              (e.g. 1000 for one-second ticks in epoch-ms).
+ * @returns {boolean} true when float32 would quantize `resolution` away.
+ *
+ * @example needsHiPrecision(Date.now(), 1000)  // true -- epoch-ms ULP is ~131072
+ * @example needsHiPrecision(1e6, 0.5)          // false -- ULP is 0.0625
+ */
+export function needsHiPrecision(maxAbsCoord, resolution) {
+    return f32Ulp(maxAbsCoord) >= resolution;
+}
+
+/** High part of a float64: the nearest float32. */
+export const hiOf = (v) => Math.fround(v);
+
+/** Low part: the residual after the high part, itself a float32. Exact -- no rounding is lost. */
+export const loOf = (v) => Math.fround(v - Math.fround(v));
+
+/**
+ * Write one LAYOUT.POINT_HI instance. `x`/`y` are float64 WORLD coordinates -- pass the
+ * raw timestamp, not a projected pixel. The camera lives on the GPU (sink.setCamera).
+ *
+ * Zero allocation; writes 10 floats at `base`.
+ */
+export function writePointHi(data, base, x, y, size, r, g, b, a) {
+    const xh = Math.fround(x);
+    const yh = Math.fround(y);
+    data[base] = xh;
+    data[base + 1] = yh;
+    data[base + 2] = Math.fround(x - xh);   // exact: |x - xh| <= ulp(x)/2
+    data[base + 3] = Math.fround(y - yh);
+    data[base + 4] = size;
+    data[base + 5] = r;
+    data[base + 6] = g;
+    data[base + 7] = b;
+    data[base + 8] = a;
+    data[base + 9] = 0;
+}

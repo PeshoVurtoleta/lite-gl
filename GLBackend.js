@@ -218,6 +218,57 @@ void main() {
     1.0);
 }`;
 
+// === v1.4.0: POINT_HI -- world coords, GPU camera, double-emulated precision ======
+//
+// The relative-to-eye subtraction MUST happen before anything else touches the value.
+// `a_posHi - u_cameraHi` is a subtraction of two float32s of near-identical magnitude,
+// so it cancels EXACTLY (Sterbenz lemma) and the residuals carry the detail. Do it in
+// the other order -- scale first, subtract later -- and the precision is already gone.
+//
+// `precision highp float` is not decoration. It is the default for floats in an ES 3.00
+// vertex shader, but stating it makes the requirement explicit: at mediump this whole
+// scheme collapses to worse than plain float32.
+const POINT_HI_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec2 a_posHi;   // world coord, high part
+layout(location=1) in vec2 a_posLo;   // world coord, residual
+layout(location=2) in float a_size;   // diameter in pixels
+layout(location=3) in vec4 a_color;
+uniform vec2 u_resolution;
+uniform vec2 u_cameraHi;              // eye, split the same way
+uniform vec2 u_cameraLo;
+uniform vec2 u_scale;                 // world units -> pixels
+uniform vec2 u_origin;                // pixel position of the eye
+out vec4 v_color;
+void main() {
+  vec2 rel = (a_posHi - u_cameraHi) + (a_posLo - u_cameraLo);
+  vec2 px = rel * u_scale + u_origin;
+  vec2 clip = (px / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  gl_PointSize = a_size;
+  v_color = a_color;
+}`;
+
+const PICK_POINT_HI_VS = `#version 300 es
+precision highp float;
+layout(location=0) in vec2 a_posHi;
+layout(location=1) in vec2 a_posLo;
+layout(location=2) in float a_size;
+uniform vec2 u_resolution;
+uniform vec2 u_cameraHi;
+uniform vec2 u_cameraLo;
+uniform vec2 u_scale;
+uniform vec2 u_origin;
+flat out uint v_id;
+void main() {
+  vec2 rel = (a_posHi - u_cameraHi) + (a_posLo - u_cameraLo);
+  vec2 px = rel * u_scale + u_origin;
+  vec2 clip = (px / u_resolution) * 2.0 - 1.0;
+  gl_Position = vec4(clip.x, -clip.y, 0.0, 1.0);
+  gl_PointSize = max(a_size, 3.0);   // widen the hit area a little, matching the POINT pick pass
+  v_id = uint(gl_VertexID);
+}`;
+
 /** Max pickable instance index: 24-bit space minus the reserved "miss" value. */
 export const PICK_MAX_ID = 0xFFFFFE;
 
@@ -225,7 +276,9 @@ const PROGRAM_SOURCES = {
     point: [POINT_VS, POINT_FS],
     quad: [QUAD_VS, QUAD_FS],
     line: [LINE_VS, LINE_FS],
+    pointHi: [POINT_HI_VS, POINT_FS],
     pointPick: [PICK_POINT_VS, PICK_FS],
+    pointHiPick: [PICK_POINT_HI_VS, PICK_FS],
     quadPick: [PICK_QUAD_VS, PICK_FS],
     linePick: [PICK_LINE_VS, PICK_FS],
 };
@@ -273,9 +326,10 @@ function dropProgramCache(gl) { programCache.delete(gl); }
 const PICK_RGBA = new Uint8Array(4);
 
 /** Lazily-built offscreen ID target for one sink. */
-function createPicker(gl, primitive) {
+function createPicker(gl, primitive, extraUniforms) {
     const key = primitive + "Pick";
     let fbo = null, tex = null, prog = null, uRes = null, tw = 0, th = 0;
+    let extra = null;
     return {
         key,
         /** After context loss the FBO/texture/program are gone; rebuild on next pick. */
@@ -289,6 +343,12 @@ function createPicker(gl, primitive) {
             if (!prog) {
                 prog = use(key);
                 uRes = gl.getUniformLocation(prog, "u_resolution");
+                if (extraUniforms) {
+                    extra = {};
+                    for (let i = 0; i < extraUniforms.length; i++) {
+                        extra[extraUniforms[i]] = gl.getUniformLocation(prog, extraUniforms[i]);
+                    }
+                }
             }
             if (!fbo || tw !== resW || th !== resH) {   // (re)size with the canvas
                 if (tex) gl.deleteTexture(tex);
@@ -305,7 +365,7 @@ function createPicker(gl, primitive) {
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 tw = resW; th = resH;
             }
-            return { prog, uRes, fbo };
+            return { prog, uRes, fbo, extra };
         },
         prog() { return prog; },
     };
@@ -322,7 +382,7 @@ function applyScissor(gl, sc, resH) {
  * Restores the previously bound framebuffer, clear colour and blend state --
  * a pick must never disturb the visible frame.
  */
-function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc) {
+function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc, applyExtra) {
     if (count <= 0) return -1;
     px = px | 0; py = py | 0;
     if (px < 0 || py < 0 || px >= resW || py >= resH) return -1;
@@ -343,8 +403,11 @@ function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc) 
     if (sc) applyScissor(gl, sc, resH);   // ...then clip the draw to the pane
     gl.useProgram(t.prog);
     gl.uniform2f(t.uRes, resW, resH);
+    // The ID pass must project through EXACTLY the same camera as the visible pass, or
+    // the pixel you read back belongs to a different instance than the one you see.
+    if (applyExtra) applyExtra(t.extra);
     gl.bindVertexArray(vao);
-    if (primitive === "point") gl.drawArrays(gl.POINTS, 0, count);
+    if (primitive === "point" || primitive === "pointHi") gl.drawArrays(gl.POINTS, 0, count);
     else gl.drawArraysInstanced(gl.TRIANGLE_STRIP, 0, 4, count);
     gl.bindVertexArray(null);
     if (sc) gl.disable(gl.SCISSOR_TEST);
@@ -478,6 +541,203 @@ export function createPointSink(gl, opts) {
             if (vao) gl.deleteVertexArray(vao);
             picker.dispose();
             // Programs are shared: release our refs; the cache deletes at zero.
+            for (const k of heldKeys) releaseProgram(gl, k);
+            heldKeys.clear();
+        },
+    };
+}
+
+const POINT_HI_STRIDE = 10;
+const POINT_HI_STRIDE_BYTES = POINT_HI_STRIDE * 4;
+
+/**
+ * createPointHiSink (v1.4.0) -- LAYOUT.POINT_HI: WORLD coordinates, camera on the GPU.
+ *
+ * The other sinks take screen pixels: `project()` bakes the camera in on the CPU, so a
+ * pan re-projects every instance and re-uploads the dirty range. At 1M points that is
+ * ~5 ms of JS and a 31 MB upload -- per frame, for a camera that moved one pixel.
+ *
+ * This sink takes world coordinates instead, uploaded once, and applies the camera in the
+ * vertex shader. A pan or zoom is `setCamera(...)`: four floats of uniform, no CPU work,
+ * no upload. Coordinates are double-emulated (hi/lo float32 pair) so epoch-millisecond
+ * timestamps survive -- a plain float32 world coord would quantize a whole minute of
+ * one-second ticks onto a single value.
+ *
+ * Write instances with `writePointHi()` from GL.js; it does the split for you.
+ *
+ * @param {WebGL2RenderingContext} gl
+ * @param {{ capacity: number }} opts  max points (sizes the VBO once).
+ */
+export function createPointHiSink(gl, opts) {
+    const capacity = opts.capacity;
+    const canvas = gl.canvas;
+
+    let program = null, vao = null, vbo = null;
+    let uResolution = null, uCameraHi = null, uCameraLo = null, uScale = null, uOrigin = null;
+    let resW = gl.drawingBufferWidth, resH = gl.drawingBufferHeight;
+    let lost = false;
+    let scissor = null, lastCount = 0;
+    const sc = { x: 0, y: 0, w: 0, h: 0 };
+    const heldKeys = new Set();
+    const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
+    const picker = createPicker(gl, "pointHi", ["u_cameraHi", "u_cameraLo", "u_scale", "u_origin"]);
+    const restoreCbs = [];
+
+    // Camera state. Split on the CPU in float64, uploaded as four float32s.
+    // Origin defaults to the canvas centre; null means "recompute on resize".
+    let camHiX = 0, camHiY = 0, camLoX = 0, camLoY = 0;
+    let scaleX = 1, scaleY = 1;
+    let originX = null, originY = null;
+
+    function createResources() {
+        program = use("pointHi");
+        uResolution = gl.getUniformLocation(program, "u_resolution");
+        uCameraHi = gl.getUniformLocation(program, "u_cameraHi");
+        uCameraLo = gl.getUniformLocation(program, "u_cameraLo");
+        uScale = gl.getUniformLocation(program, "u_scale");
+        uOrigin = gl.getUniformLocation(program, "u_origin");
+
+        vao = gl.createVertexArray();
+        vbo = gl.createBuffer();
+        gl.bindVertexArray(vao);
+        gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+        gl.bufferData(gl.ARRAY_BUFFER, capacity * POINT_HI_STRIDE_BYTES, gl.DYNAMIC_DRAW);
+        // a_posHi (vec2 @0), a_posLo (vec2 @8), a_size (float @16), a_color (vec4 @20)
+        gl.enableVertexAttribArray(0);
+        gl.vertexAttribPointer(0, 2, gl.FLOAT, false, POINT_HI_STRIDE_BYTES, 0);
+        gl.enableVertexAttribArray(1);
+        gl.vertexAttribPointer(1, 2, gl.FLOAT, false, POINT_HI_STRIDE_BYTES, 8);
+        gl.enableVertexAttribArray(2);
+        gl.vertexAttribPointer(2, 1, gl.FLOAT, false, POINT_HI_STRIDE_BYTES, 16);
+        gl.enableVertexAttribArray(3);
+        gl.vertexAttribPointer(3, 4, gl.FLOAT, false, POINT_HI_STRIDE_BYTES, 20);
+        gl.bindVertexArray(null);
+        gl.viewport(0, 0, resW, resH);
+    }
+
+    function onLost(e) {
+        e.preventDefault();
+        lost = true;
+        dropProgramCache(gl);
+        picker.invalidate();
+    }
+    function onRestored() {
+        createResources();
+        lost = false;
+        for (let i = 0; i < restoreCbs.length; i++) restoreCbs[i]();
+    }
+
+    const canListen = canvas && typeof canvas.addEventListener === "function";
+    if (canListen) {
+        canvas.addEventListener("webglcontextlost", onLost, false);
+        canvas.addEventListener("webglcontextrestored", onRestored, false);
+    }
+
+    createResources();
+
+    const ox = () => (originX === null ? resW * 0.5 : originX);
+    const oy = () => (originY === null ? resH * 0.5 : originY);
+
+    /** Push the camera into a program's uniforms. Shared by the visible and ID passes. */
+    function setCameraUniforms(uHi, uLo, uSc, uOr) {
+        gl.uniform2f(uHi, camHiX, camHiY);
+        gl.uniform2f(uLo, camLoX, camLoY);
+        gl.uniform2f(uSc, scaleX, scaleY);
+        gl.uniform2f(uOr, ox(), oy());
+    }
+
+    const applyPickCamera = (extra) => {
+        setCameraUniforms(extra.u_cameraHi, extra.u_cameraLo, extra.u_scale, extra.u_origin);
+    };
+
+    return {
+        gl,
+        capacity,
+
+        /**
+         * Move the camera. Zero allocation, zero upload -- this is the whole point of the
+         * layout. `x`/`y` are float64 WORLD coordinates (a raw epoch-ms timestamp is fine);
+         * they are split hi/lo here, in float64, before they ever touch a float32.
+         *
+         * @param {number} x  world x at the eye
+         * @param {number} y  world y at the eye
+         * @param {number} [sx=1] world x units -> pixels
+         * @param {number} [sy=sx] world y units -> pixels
+         * @param {number} [px] pixel x of the eye (default: canvas centre)
+         * @param {number} [py] pixel y of the eye (default: canvas centre)
+         */
+        setCamera(x, y, sx, sy, px, py) {
+            camHiX = Math.fround(x);
+            camHiY = Math.fround(y);
+            camLoX = Math.fround(x - camHiX);
+            camLoY = Math.fround(y - camHiY);
+            if (sx !== undefined) scaleX = sx;
+            if (sy !== undefined) scaleY = sy;
+            else if (sx !== undefined) scaleY = sx;
+            originX = (px === undefined) ? null : px;
+            originY = (py === undefined) ? null : py;
+        },
+
+        /** Current camera, for tests and debugging. Allocates -- do not call per frame. */
+        getCamera() {
+            return {
+                x: camHiX + camLoX, y: camHiY + camLoY,
+                hiX: camHiX, hiY: camHiY, loX: camLoX, loY: camLoY,
+                scaleX, scaleY, originX: ox(), originY: oy(),
+            };
+        },
+
+        resize(w, h) {
+            resW = w; resH = h;
+            if (!lost) gl.viewport(0, 0, w, h);
+        },
+
+        upload(data, floatOffset, floatCount) {
+            if (lost) return;
+            if (floatOffset + floatCount > capacity * POINT_HI_STRIDE) {
+                throw new RangeError("lite-gl: point_hi upload exceeds sink capacity (" + capacity + " points). "
+                    + "Size createPointHiSink({ capacity }) to your field's maximum count.");
+            }
+            gl.bindBuffer(gl.ARRAY_BUFFER, vbo);
+            gl.bufferSubData(gl.ARRAY_BUFFER, floatOffset * 4, data, floatOffset, floatCount);
+        },
+
+        draw(count) {
+            if (lost) return;
+            lastCount = count;
+            if (count <= 0) return;
+            gl.useProgram(program);
+            gl.uniform2f(uResolution, resW, resH);
+            setCameraUniforms(uCameraHi, uCameraLo, uScale, uOrigin);
+            gl.bindVertexArray(vao);
+            if (scissor) applyScissor(gl, scissor, resH);
+            gl.drawArrays(gl.POINTS, 0, count);
+            if (scissor) gl.disable(gl.SCISSOR_TEST);
+            gl.bindVertexArray(null);
+        },
+
+        setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
+        clearScissor() { scissor = null; },
+
+        /** Instance index under (x, y) -- device px, top-left origin -- or -1. */
+        pick(x, y, count) {
+            const n = (count === undefined) ? lastCount : count;
+            return pickAt(gl, picker, use, vao, "pointHi", resW, resH, n, x, y, scissor, applyPickCamera);
+        },
+
+        onContextRestored(cb) {
+            restoreCbs.push(cb);
+            return () => { const i = restoreCbs.indexOf(cb); if (i >= 0) restoreCbs.splice(i, 1); };
+        },
+        isContextLost() { return lost; },
+        dispose() {
+            if (canListen) {
+                canvas.removeEventListener("webglcontextlost", onLost, false);
+                canvas.removeEventListener("webglcontextrestored", onRestored, false);
+            }
+            if (vbo) gl.deleteBuffer(vbo);
+            if (vao) gl.deleteVertexArray(vao);
+            picker.dispose();
             for (const k of heldKeys) releaseProgram(gl, k);
             heldKeys.clear();
         },
