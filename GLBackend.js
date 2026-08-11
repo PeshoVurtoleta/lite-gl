@@ -269,7 +269,17 @@ void main() {
   v_id = uint(gl_VertexID);
 }`;
 
-/** Max pickable instance index: 24-bit space minus the reserved "miss" value. */
+/**
+ * Max pickable instance index: 24-bit space minus the reserved "miss" value.
+ *
+ * HARD CAP. `draw(count)` renders any count fine -- colour output is unaffected --
+ * but the ID buffer encodes instance indices in 24 bits. Valid indices are 0..count-1,
+ * so the largest pickable index is PICK_MAX_ID and the largest pickable count is
+ * PICK_MAX_ID + 1 (0xFFFFFF instances). `pick()` on a larger field would give a top
+ * index at or past the reserved miss (0xFFFFFF), so it throws a RangeError rather than
+ * returning a wrong (aliased) instance (fail closed, GL-07). The guard lives in the
+ * on-demand pick path, never in the per-frame draw hot body.
+ */
 export const PICK_MAX_ID = 0xFFFFFE;
 
 const PROGRAM_SOURCES = {
@@ -330,6 +340,10 @@ function createPicker(gl, primitive, extraUniforms) {
     const key = primitive + "Pick";
     let fbo = null, tex = null, prog = null, uRes = null, tw = 0, th = 0;
     let extra = null;
+    // Reused result object -- ensure() must allocate NOTHING per pick (GL-05): a
+    // fresh { prog, uRes, fbo, extra } every call would leak ~50 B onto the heap
+    // for every hover pixel. Mutated in place, same reference each call.
+    const out = { prog: null, uRes: null, fbo: null, extra: null };
     return {
         key,
         /** After context loss the FBO/texture/program are gone; rebuild on next pick. */
@@ -365,7 +379,8 @@ function createPicker(gl, primitive, extraUniforms) {
                 gl.bindFramebuffer(gl.FRAMEBUFFER, null);
                 tw = resW; th = resH;
             }
-            return { prog, uRes, fbo, extra };
+            out.prog = prog; out.uRes = uRes; out.fbo = fbo; out.extra = extra;
+            return out;
         },
         prog() { return prog; },
     };
@@ -379,18 +394,38 @@ function applyScissor(gl, sc, resH) {
 
 /**
  * Render the field into the ID target and read back one pixel.
- * Restores the previously bound framebuffer, clear colour and blend state --
- * a pick must never disturb the visible frame.
+ * Restores the sink's default draw framebuffer, its clear colour and the blend
+ * state -- a pick must never disturb the visible frame.
+ *
+ * ZERO ALLOCATION (GL-05). The old path called
+ * `gl.getParameter(gl.COLOR_CLEAR_VALUE)`, which returns a FRESH `Float32Array(4)`
+ * every call -- ~60 heap allocs/sec while a pointer hovers. The clear colour is now
+ * restored from the sink's own JS mirror (`clearRGBA`, which the sink owns via
+ * `setClearColor`); the default draw target is the canvas (null); and blend is read
+ * through the non-allocating `isEnabled` boolean. No allocating GL getter remains.
+ *
+ * HARD CAP (GL-07). Valid instance indices are 0..count-1; the top index must stay
+ * <= PICK_MAX_ID (0xFFFFFE) to remain distinct from the reserved miss value
+ * (0xFFFFFF). So a count of PICK_MAX_ID + 1 (top index == PICK_MAX_ID) is still
+ * valid; only a larger count -- whose top index would reach or pass the miss
+ * sentinel -- fails closed, rather than returning a wrong (aliased) instance.
  */
-function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc, applyExtra) {
+function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc, applyExtra, clearRGBA) {
     if (count <= 0) return -1;
+    if (count - 1 > PICK_MAX_ID) {   // top index (count-1) would reach/pass the miss sentinel
+        throw new RangeError(
+            "lite-gl: pick over " + count + " instances gives a top index (" + (count - 1) + ") past "
+            + "PICK_MAX_ID (" + PICK_MAX_ID + "). The 24-bit ID buffer cannot address it without aliasing "
+            + "the reserved miss value (0xFFFFFF). Split the field or cap the pickable set."
+        );
+    }
     px = px | 0; py = py | 0;
     if (px < 0 || py < 0 || px >= resW || py >= resH) return -1;
 
     const t = picker.ensure(resW, resH, use);
 
-    const prevFbo = gl.getParameter(gl.FRAMEBUFFER_BINDING);
-    const prevClear = gl.getParameter(gl.COLOR_CLEAR_VALUE);
+    // No allocating getParameter: blend is a boolean, the default draw target is the
+    // canvas (null), and the clear colour comes from the sink's JS mirror.
     const blendOn = gl.isEnabled(gl.BLEND);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, t.fbo);
@@ -414,9 +449,9 @@ function pickAt(gl, picker, use, vao, primitive, resW, resH, count, px, py, sc, 
 
     gl.readPixels(px, resH - py - 1, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, PICK_RGBA);
 
-    gl.bindFramebuffer(gl.FRAMEBUFFER, prevFbo);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);   // the sink draws to the default framebuffer (the canvas)
     gl.viewport(0, 0, resW, resH);
-    gl.clearColor(prevClear[0], prevClear[1], prevClear[2], prevClear[3]);
+    gl.clearColor(clearRGBA[0], clearRGBA[1], clearRGBA[2], clearRGBA[3]);
     if (blendOn) gl.enable(gl.BLEND);
 
     const r = PICK_RGBA[0], g = PICK_RGBA[1], b = PICK_RGBA[2];
@@ -441,6 +476,9 @@ export function createPointSink(gl, opts) {
     let lost = false;
     let scissor = null, lastCount = 0;
     const sc = { x: 0, y: 0, w: 0, h: 0 };   // reused -- setScissor allocates nothing
+    // The clear colour the pick pass restores after its offscreen ID render. The
+    // sink owns this write (setClearColor), so pick reads no allocating GL getter.
+    const clearRGBA = [0, 0, 0, 0];   // default (0,0,0,0), the GL default clear colour; plain array preserves the app value exactly
     const heldKeys = new Set();
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "point");
@@ -518,6 +556,12 @@ export function createPointSink(gl, opts) {
         /** Draw to the whole viewport again. */
         clearScissor() { scissor = null; },
         /**
+         * Set the clear colour, owning the write so pick() can restore it without an
+         * allocating getParameter. Applies it now; pass your app's clear colour here
+         * (default is 0,0,0,0) if you want a pick to leave it untouched.
+         */
+        setClearColor(r, g, b, a) { clearRGBA[0] = r; clearRGBA[1] = g; clearRGBA[2] = b; clearRGBA[3] = a; gl.clearColor(r, g, b, a); },
+        /**
          * Instance index under (x, y) -- device px, top-left origin -- or -1 for a miss.
          * Renders one ID pass offscreen and reads back a single pixel: no CPU hit-testing,
          * so this is O(1) on the CPU even at 1M instances. Defaults to the count last drawn.
@@ -525,7 +569,7 @@ export function createPointSink(gl, opts) {
          */
         pick(x, y, count) {
             const n = (count === undefined) ? lastCount : count;
-            return pickAt(gl, picker, use, vao, "point", resW, resH, n, x, y, scissor);
+            return pickAt(gl, picker, use, vao, "point", resW, resH, n, x, y, scissor, undefined, clearRGBA);
         },
         onContextRestored(cb) {
             restoreCbs.push(cb);
@@ -578,6 +622,8 @@ export function createPointHiSink(gl, opts) {
     let lost = false;
     let scissor = null, lastCount = 0;
     const sc = { x: 0, y: 0, w: 0, h: 0 };
+    // Clear-colour mirror owned by the sink so pick() restores it with no allocating getter.
+    const clearRGBA = [0, 0, 0, 0];   // default (0,0,0,0); plain array preserves the app value exactly
     const heldKeys = new Set();
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "pointHi", ["u_cameraHi", "u_cameraLo", "u_scale", "u_origin"]);
@@ -719,10 +765,13 @@ export function createPointHiSink(gl, opts) {
         setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
         clearScissor() { scissor = null; },
 
+        /** Set the clear colour, owning the write so pick() restores it with no allocating getter. */
+        setClearColor(r, g, b, a) { clearRGBA[0] = r; clearRGBA[1] = g; clearRGBA[2] = b; clearRGBA[3] = a; gl.clearColor(r, g, b, a); },
+
         /** Instance index under (x, y) -- device px, top-left origin -- or -1. */
         pick(x, y, count) {
             const n = (count === undefined) ? lastCount : count;
-            return pickAt(gl, picker, use, vao, "pointHi", resW, resH, n, x, y, scissor, applyPickCamera);
+            return pickAt(gl, picker, use, vao, "pointHi", resW, resH, n, x, y, scissor, applyPickCamera, clearRGBA);
         },
 
         onContextRestored(cb) {
@@ -774,6 +823,8 @@ export function createQuadSink(gl, opts) {
     let lost = false;
     let scissor = null, lastCount = 0;
     const sc = { x: 0, y: 0, w: 0, h: 0 };   // reused -- setScissor allocates nothing
+    // Clear-colour mirror owned by the sink so pick() restores it with no allocating getter.
+    const clearRGBA = [0, 0, 0, 0];   // default (0,0,0,0); plain array preserves the app value exactly
     const heldKeys = new Set();
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "quad");
@@ -879,6 +930,8 @@ export function createQuadSink(gl, opts) {
         setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
         /** Draw to the whole viewport again. */
         clearScissor() { scissor = null; },
+        /** Set the clear colour, owning the write so pick() restores it with no allocating getter. */
+        setClearColor(r, g, b, a) { clearRGBA[0] = r; clearRGBA[1] = g; clearRGBA[2] = b; clearRGBA[3] = a; gl.clearColor(r, g, b, a); },
         /**
          * Instance index under (x, y) -- device px, top-left origin -- or -1 for a miss.
          * Renders one ID pass offscreen and reads back a single pixel: no CPU hit-testing,
@@ -887,7 +940,7 @@ export function createQuadSink(gl, opts) {
          */
         pick(x, y, count) {
             const n = (count === undefined) ? lastCount : count;
-            return pickAt(gl, picker, use, vao, "quad", resW, resH, n, x, y, scissor);
+            return pickAt(gl, picker, use, vao, "quad", resW, resH, n, x, y, scissor, undefined, clearRGBA);
         },
         onContextRestored(cb) {
             restoreCbs.push(cb);
@@ -944,6 +997,8 @@ export function createLineSink(gl, opts) {
     let lost = false;
     let scissor = null, lastCount = 0;
     const sc = { x: 0, y: 0, w: 0, h: 0 };   // reused -- setScissor allocates nothing
+    // Clear-colour mirror owned by the sink so pick() restores it with no allocating getter.
+    const clearRGBA = [0, 0, 0, 0];   // default (0,0,0,0); plain array preserves the app value exactly
     const heldKeys = new Set();
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "line");
@@ -1049,6 +1104,8 @@ export function createLineSink(gl, opts) {
         setScissor(x, y, w, h) { sc.x = x; sc.y = y; sc.w = w; sc.h = h; scissor = sc; },
         /** Draw to the whole viewport again. */
         clearScissor() { scissor = null; },
+        /** Set the clear colour, owning the write so pick() restores it with no allocating getter. */
+        setClearColor(r, g, b, a) { clearRGBA[0] = r; clearRGBA[1] = g; clearRGBA[2] = b; clearRGBA[3] = a; gl.clearColor(r, g, b, a); },
         /**
          * Instance index under (x, y) -- device px, top-left origin -- or -1 for a miss.
          * Renders one ID pass offscreen and reads back a single pixel: no CPU hit-testing,
@@ -1057,7 +1114,7 @@ export function createLineSink(gl, opts) {
          */
         pick(x, y, count) {
             const n = (count === undefined) ? lastCount : count;
-            return pickAt(gl, picker, use, vao, "line", resW, resH, n, x, y, scissor);
+            return pickAt(gl, picker, use, vao, "line", resW, resH, n, x, y, scissor, undefined, clearRGBA);
         },
         onContextRestored(cb) {
             restoreCbs.push(cb);

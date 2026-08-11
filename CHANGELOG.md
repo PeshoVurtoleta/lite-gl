@@ -1,5 +1,83 @@
 # Changelog
 
+## [1.4.1] - 2026-08-10
+
+### Fixed
+- **`GL.d.ts` compiles under default `tsc`.** Removed a duplicate `LAYOUT` declaration
+  (`TS2451`) that shipped in `files[]`; the surviving block is the complete one carrying
+  `POINT_HI: 10`. TypeScript consumers can now import the types without `skipLibCheck`.
+- **README headline install resolves.** The v1.4 deep-zoom example imported
+  `@zakkster/lite-gl/GLBackend.js`, which the exports map blocks
+  (`ERR_PACKAGE_PATH_NOT_EXPORTED`); it now imports the exported `@zakkster/lite-gl/backend`.
+- **LAYOUT constants table** in the README now lists `POINT_HI: 10`, matching the runtime.
+
+### Added
+- **`export const VERSION = "1.4.1"`** in `GL.js` (packaging law: version in
+  `package.json` + main file + `llms.txt`).
+- **`test/torture.mjs`** -- the mandatory `node --expose-gc` gate, built on
+  `@zakkster/lite-leak` + `@zakkster/lite-gc-profiler`. Tiers T0 (dirty-range metamorphic
+  laws), T1 (degenerate values + fail-closed construction), T2 (aliasing matrix vs a
+  shadow buffer, incl. the N-3 clamp), T3 (grow across a pow2 boundary mid-dirty-range),
+  T4 (post-dispose flush no-op, double-dispose, context-loss re-seed for POINT and
+  POINT_HI, program-cache refcount -> 0), T5 (differential fuzz vs a naive full-upload
+  oracle), T6 (zero-alloc gate over 1M frames of `project`+`flush`+`draw` **and** the
+  now-real `pick()` sub-gate, POINT/POINT_HI/QUAD/LINE), T7 (1M soak + create/dispose
+  conservation via lite-leak), and T9 (controls: the gate must be able to fail). Wired to
+  `npm run test:torture`.
+- **`sink.setClearColor(r, g, b, a)`** on every WebGL2 sink -- the sink now *owns* the
+  clear-colour write, so a `pick()` can restore it from a JS mirror instead of an
+  allocating `getParameter` (see GL-05 below). Pass your app's clear colour through it if
+  you want a pick to leave it untouched; the default (0,0,0,0) matches the GL default.
+
+### Hardened -- fail closed on every unverified state (was fail-open)
+- **`createField` validates at construction (GL-04).** A missing/garbage `stride` used to
+  write to `data[NaN]` in silence (the point vanished); an unknown key was silently
+  ignored. Now, *before the first `Float32Array` is allocated*: a non-positive-integer
+  `stride` throws naming the LAYOUT strides (POINT=8, QUAD=9, LINE=9, POINT_HI=10); an
+  unknown key throws with a did-you-mean hint (`strid` -> `stride`); and `capacity`, when
+  present, must be a **finite positive integer** at or below a hard cap of **2^30**. The
+  finiteness + cap checks are load-bearing: `Infinity > 0` (and any value past 2^30) would
+  otherwise slip through a bare `> 0` test into `nextPow2`, whose 32-bit shift wraps
+  negative and **loops forever** -- a fail-*open* hang worse than the `data[NaN]` this
+  validation exists to stop. `nextPow2` is also bounded so no input can loop it.
+  **`capacity: 0` was previously an implicit "use the default 1024" (`0 || 1024`) and is
+  now rejected** as a degenerate input (null is not zero). The hot bodies
+  (`push`/`set`/`swapRemove`/`flush`/`writePointHi`) gain **zero** new branches --
+  validation lives only on the construction path.
+- **`reactiveField().flush()` after `dispose()` is a no-op (GL-09).** It mirrors the
+  existing `frame()` guard; a disposed driver no longer uploads or draws.
+- **`flush` clamps a post-shrink stale dirty range to the active count (N-3).** A
+  `swapRemove`/`setCount` that lowered `count` could leave `dHi >= count`, uploading floats
+  past the live range; the window is now `[dLo, min(dHi, count-1)]`. No allocation.
+- **`pick()` enforces `PICK_MAX_ID` (GL-07).** A pick whose instances would exceed the
+  24-bit ID space threw nothing and silently aliased instance `0xFFFFFF` (the reserved
+  "miss"); it now throws a `RangeError`. Valid indices are `0..count-1`, so the cap is on
+  the *top index*: a `count` of `PICK_MAX_ID + 1` (top index `PICK_MAX_ID` = `0xFFFFFE`, still
+  distinct from the miss sentinel) is allowed; only a larger `count` throws. The guard is on
+  the on-demand pick path, never in the per-frame draw hot body.
+
+### Fixed -- `pick()` is zero-allocation (GL-05)
+- `pickAt` no longer calls `gl.getParameter(gl.COLOR_CLEAR_VALUE)` (which returns a fresh
+  `Float32Array(4)` **every call** -- ~60 heap allocs/sec while a pointer hovers). Clear
+  colour is restored from the sink's JS mirror, blend from the non-allocating `isEnabled`
+  boolean, and the draw target is the canvas. The picker's `ensure()` result object is now
+  reused rather than re-allocated per pick. Measured: **0 B/op** over 100k isolated picks
+  for every layout (torture T6 pick sub-gate; the old `KNOWN_FAIL_GL05` pending marker is
+  gone). Pick correctness (decode / miss / out-of-bounds / state-restore) is unchanged.
+
+### Removed (dead code / comment truth)
+- Deleted the unused `reg.dispose` (`_dispose`) binding in `createDriver` and its now-dead
+  `@zakkster/lite-signal` import (N-1).
+- Softened the two `"Exact -- no rounding is lost"` comments on `loOf` / `writePointHi` to
+  state the honest 23-bit float32 residual bound (N-2).
+
+### Note
+- **Hot-path change, intentional and gated.** `pickAt` was rewritten for GL-05 (SHA
+  changed, expected); `flush` changed only by the N-3 clamp (SHA changed, expected). The
+  executable logic of `project`, `push`, `set`, and `writePointHi` is unchanged from v1.4.0
+  (only an inline comment inside `writePointHi` was softened per N-2). The zero-alloc gate
+  (T6) is green at 0 B/op for every hot path including `pick`.
+
 ## [1.4.0] - 2026-07-14
 
 ### Added

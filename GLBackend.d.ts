@@ -15,6 +15,13 @@ export interface GLSink extends Sink {
     /** Draw to the whole viewport again. */
     clearScissor(): void;
     /**
+     * Set the clear colour, owning the write so `pick()` restores it from a JS mirror
+     * instead of an allocating `getParameter` (v1.4.1). Applies it immediately; route your
+     * app's clear colour through this if you want a pick to leave it untouched. The default
+     * mirror is (0,0,0,0), the GL default.
+     */
+    setClearColor(r: number, g: number, b: number, a: number): void;
+    /**
      * Instance index under (x, y) -- device pixels, top-left origin -- or -1 for a miss.
      *
      * Renders one ID pass into an offscreen RGBA8 target (each instance flat-shaded with
@@ -23,8 +30,10 @@ export interface GLSink extends Sink {
      * demand (a throttled `pointermove`), never every frame.
      *
      * Defaults to the instance count last passed to `draw()`. Honours `setScissor`, so a
-     * hover cannot hit a neighbouring pane. Leaves the bound framebuffer, clear colour
-     * and blend state exactly as it found them.
+     * hover cannot hit a neighbouring pane. ZERO ALLOCATION (v1.4.1): restores the clear
+     * colour, blend and the default draw framebuffer with no allocating getter. Throws a
+     * RangeError when the top index (`count - 1`) would exceed `PICK_MAX_ID` -- i.e. a
+     * `count` above `PICK_MAX_ID + 1`, the largest the 24-bit ID buffer can address.
      */
     pick(x: number, y: number, count?: number): number;
     onContextRestored(cb: () => void): () => void;

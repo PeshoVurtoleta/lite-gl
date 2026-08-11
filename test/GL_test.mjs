@@ -1,6 +1,6 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { signal, effect, stats, createScope } from "@zakkster/lite-signal";
+import { signal, effect, createScope } from "@zakkster/lite-signal";
 import { createField, reactiveField, createDriver, LAYOUT, f32Ulp, needsHiPrecision, hiOf, loOf, writePointHi } from "../GL.js";
 
 function withRoot(fn) {
@@ -26,6 +26,34 @@ const wPoint = (x, y, s, r, g, b, a) => (data, base) => {
     data[base] = x; data[base + 1] = y; data[base + 2] = s;
     data[base + 3] = r; data[base + 4] = g; data[base + 5] = b; data[base + 6] = a;
 };
+
+test("createField fails closed on an unverified config (GL-04): validation at construction only", () => {
+    // missing / invalid stride -> throw naming the LAYOUT values (never data[NaN]).
+    assert.throws(() => createField({ capacity: 8 }), /stride/, "missing stride throws");
+    assert.throws(() => createField({ capacity: 8 }), /POINT=8/, "the error names the LAYOUT strides");
+    assert.throws(() => createField({ stride: 0 }), /stride/, "stride 0 throws");
+    assert.throws(() => createField({ stride: 8.5 }), /positive integer/, "non-integer stride throws");
+    assert.throws(() => createField({ stride: -8 }), /stride/, "negative stride throws");
+
+    // capacity present but not a finite positive integer -> throw (null is not zero).
+    assert.throws(() => createField({ stride: 8, capacity: 0 }), /capacity/, "capacity 0 throws");
+    assert.throws(() => createField({ stride: 8, capacity: -5 }), /capacity/, "negative capacity throws");
+    assert.throws(() => createField({ stride: 8, capacity: NaN }), /capacity/, "NaN capacity throws");
+    assert.throws(() => createField({ stride: 8, capacity: 3.5 }), /capacity/, "fractional capacity throws");
+    // fail-OPEN guard: Infinity passes a bare `> 0` test and hangs nextPow2. Must throw.
+    assert.throws(() => createField({ stride: 8, capacity: Infinity }), /capacity/, "Infinity capacity throws (does NOT hang)");
+    assert.throws(() => createField({ stride: 8, capacity: 2 ** 31 }), /exceeds the hard cap/, "capacity past 2^30 throws (does NOT hang)");
+    assert.throws(() => createField({ stride: 8, capacity: (1 << 30) + 1 }), /exceeds the hard cap/, "capacity just past the cap throws");
+
+    // unknown key -> throw with a did-you-mean hint (never a silent ignore).
+    assert.throws(() => createField({ stride: 8, strid: 8 }), /did you mean 'stride'/, "a typo'd key is rejected with a hint");
+    assert.throws(() => createField({ stride: 8, capacty: 16 }), /did you mean 'capacity'/, "capacty -> capacity");
+    assert.throws(() => createField({ stride: 8, foo: 1 }), /unknown option 'foo'/, "an unrelated key is still rejected");
+    assert.throws(() => createField(null), /config object/, "null config throws");
+
+    // a valid config still constructs.
+    assert.equal(createField({ stride: LAYOUT.POINT }).capacity, 1024, "default capacity when omitted");
+});
 
 test("push writes instances, grows by powers of two, and tracks count", () => {
     const f = createField({ capacity: 2, stride: LAYOUT.POINT });
@@ -117,18 +145,26 @@ test("reactive driver re-projects on signal change and flushes once per frame (d
     r.dispose();
 });
 
-test("1M-instance re-projection is zero-GC: the backing buffer is never reallocated", () => {
+test("1M-instance re-projection reuses one backing buffer (no reallocation)", () => {
+    // NOTE: this asserts the STRUCTURAL zero-GC property only -- that a full
+    // re-projection stays within the same Float32Array, so no growth path runs.
+    // It is NOT a JS-heap allocation proof. The real heap gate lives in
+    // test/torture.mjs tier T6 (lite-gc-profiler: bytes-per-op == 0, maxMajor == 0
+    // over 10k frames of project+flush+draw for every layout). The old version of
+    // this test asserted lite-signal *pool counters* (stats().poolGrowths /
+    // totalAllocations), which measure the signal engine's internal pools, not
+    // this package's heap -- a stray Float32Array in the backend would have sailed
+    // straight through it. That claim now belongs to T6; this keeps only the
+    // buffer-identity invariant it can actually prove.
     const N = 1_000_000;
     const f = createField({ capacity: N, stride: LAYOUT.POINT });
     f.setCount(N);
     const bufRef = f.data;                               // capture the backing store
     const sink = mockSink();
-    // warm
-    for (let i = 0; i < N; i++) f.data[i * LAYOUT.POINT] = i;
+    for (let i = 0; i < N; i++) f.data[i * LAYOUT.POINT] = i; // warm
     f.touchAll(); f.flush(sink);
     sink.draws = 0;                                      // discount the warm-up draw
 
-    const base = stats();
     for (let frame = 0; frame < 60; frame++) {           // 60 frames of full re-projection
         const k = frame * 0.01;
         for (let i = 0; i < N; i++) {
@@ -139,10 +175,7 @@ test("1M-instance re-projection is zero-GC: the backing buffer is never realloca
         f.touchAll();
         f.flush(sink);
     }
-    const after = stats();
     assert.equal(f.data, bufRef, "same Float32Array reference after 60 frames -> no reallocation");
-    assert.equal(after.poolGrowths - base.poolGrowths, 0, "no engine pool growth");
-    assert.equal(after.totalAllocations - base.totalAllocations, 0, "no engine allocations");
     assert.equal(sink.draws, 60, "drew every frame");
 });
 
@@ -191,6 +224,51 @@ test("reactiveField re-seeds the whole active range when the sink's GL context i
     assert.equal(sink.lastFloatOffset, 0, "re-upload starts at instance 0");
     assert.equal(sink.lastFloatCount, 40 * f.stride, "re-upload covers the entire active range, not just a dirty window");
     r.dispose();
+});
+
+test("reactiveField().flush() after dispose() is a no-op (GL-09): a disposed driver draws nothing", () => {
+    const f = createField({ capacity: 64, stride: LAYOUT.POINT });
+    const sink = mockSink();
+    const r = withRoot(() => reactiveField(f, {
+        manual: true, sink,
+        project: (fld) => { fld.set(0, wPoint(1, 1, 2, 1, 1, 1, 1)); fld.setCount(4); },
+    }));
+    r.value.flush();
+    assert.ok(sink.draws >= 1, "flush draws before dispose");
+
+    const drawsBefore = sink.draws, uploadsBefore = sink.uploads;
+    r.value.dispose();
+    r.value.flush();                         // must no-op now that the driver is disposed
+    r.value.frame();                         // frame() was already guarded
+    assert.equal(sink.draws, drawsBefore, "flush after dispose does not draw");
+    assert.equal(sink.uploads, uploadsBefore, "flush after dispose does not upload");
+
+    // double dispose is idempotent and does not throw.
+    assert.doesNotThrow(() => r.value.dispose(), "double dispose is a no-op");
+    r.dispose();
+});
+
+test("flush clamps a post-shrink stale dirty range to the active count (N-3)", () => {
+    const f = createField({ capacity: 32, stride: LAYOUT.POINT });
+    const sink = mockSink();
+    for (let i = 0; i < 12; i++) f.push(wPoint(i, i, 1, 1, 1, 1, 1));   // count 12
+    f.flush(sink);
+
+    // Open a dirty range whose high bound reaches the top of the buffer, then
+    // swap-remove the LAST element repeatedly (that branch marks nothing dirty),
+    // so `count` shrinks below `dHi` while the range stays open. Without the clamp,
+    // flush would upload floats past the now-inactive tail.
+    f.set(2, wPoint(2, 2, 3, 1, 1, 1, 1));   // dirty [2,2]
+    f.touch(11);                             // extend dirty to [2,11]
+    f.swapRemove(11);                        // i === last -> no mark, count 11
+    f.swapRemove(10);                        // count 10
+    f.swapRemove(9);                         // count 9
+    f.swapRemove(8);                         // count 8; dHi (11) is now stale
+    assert.equal(f.dirtyHi(), 11, "the open dirty range still reaches the old top");
+    sink.uploads = 0; sink.lastFloatOffset = -1; sink.lastFloatCount = -1;
+    f.flush(sink);
+    assert.equal(sink.lastFloatOffset, 2 * f.stride, "upload starts at the dirty low");
+    assert.equal(sink.lastFloatCount, (7 - 2 + 1) * f.stride, "upload window clamped to count-1 (7), never past the active range");
 });
 
 // ===========================================================================

@@ -172,7 +172,7 @@ is the whole point of this package.
 createField({ capacity?, stride }): Field
 reactiveField(field, { project, sink, manual? }): { frame, flush, stop, dispose }
 createDriver(registry): { reactiveField }
-LAYOUT = { POINT: 8, QUAD: 9, LINE: 9 }
+LAYOUT = { POINT: 8, QUAD: 9, LINE: 9, POINT_HI: 10 }
 
 interface Field {
   data: Float32Array; count; capacity
@@ -242,7 +242,7 @@ The cost shows up when the camera moves. A one-pixel pan re-projects **every** i
 
 ```js
 import { createField, reactiveField, LAYOUT, writePointHi, needsHiPrecision } from '@zakkster/lite-gl';
-import { createPointHiSink } from '@zakkster/lite-gl/GLBackend.js';
+import { createPointHiSink } from '@zakkster/lite-gl/backend';
 
 const sink = createPointHiSink(gl, { capacity: 1_000_000 });
 const field = createField({ capacity: 1_000_000, stride: LAYOUT.POINT_HI });

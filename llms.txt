@@ -46,6 +46,11 @@ The GPU lives behind the `sink` interface:
     swapRemove(i), setCount(n), touch(i), touchAll(), clearDirty(), dirtyLo(),
     dirtyHi(), flush(sink), reset(). `write(data, base)` fills `stride` floats.
     The backing buffer is never reallocated while you stay within capacity.
+    Fails closed at construction (v1.4.1): a non-positive-integer stride, an unknown
+    key (did-you-mean hint), or a capacity that is not a finite positive integer at or
+    below the 2^30 hard cap throws before any allocation. capacity: 0 is rejected (it was
+    an implicit default 1024 pre-1.4.1); Infinity / values past 2^30 throw rather than
+    hanging nextPow2 (which is itself bounded so no input can loop it).
 - reactiveField(field, { project, sink, manual? }) -> { frame, flush, stop, dispose }
     `project(field)` reads signals and writes the field; it re-runs when a tracked
     signal changes (marking the field dirty). `frame()` flushes the dirty range to
@@ -56,7 +61,7 @@ The GPU lives behind the `sink` interface:
 
 ## Backend API (GL.js/backend, browser-only)
 
-- createPointSink(gl, { capacity }) -> { upload, draw, resize(w,h),
+- createPointSink(gl, { capacity }) -> { upload, draw, resize(w,h), setClearColor(r,g,b,a),
     onContextRestored(cb), isContextLost(), capacity, dispose, gl }
     Renders a LAYOUT.POINT field (x, y, size, r, g, b, a, _pad) as GL_POINTS in one
     drawArrays call. Positions are in SCREEN PIXELS -- do world->screen in `project`.
@@ -82,14 +87,21 @@ Every sink also exposes:
 - setScissor(x, y, w, h) / clearScissor()
     Clips draws AND picks to a rect: one pane of a multi-pane chart, no extra framebuffers.
     x,y are TOP-LEFT origin in device px (GL's bottom-left scissor origin is flipped for you).
+- setClearColor(r, g, b, a)  (v1.4.1)
+    The sink owns the clear-colour write so pick() can restore it from a JS mirror instead of
+    an allocating getParameter. Route your app's clear colour through this if you want a pick
+    to leave it untouched; the default (0,0,0,0) matches the GL default.
 - pick(x, y, count?) -> instance index, or -1 for a miss
     Renders one ID pass into a lazily-created offscreen RGBA8 target (each instance flat-
     shaded with its index, 24-bit little-endian RGB) and reads back ONE pixel. The CPU does
     no hit-testing, so hover works at 1M instances; the GPU cost is one extra draw PER CALL,
     so call it on a throttled pointermove, never in the frame loop. Defaults to the count
     last passed to draw(). Honours the scissor, so a hover cannot hit a neighbouring pane.
-    Saves/restores the bound framebuffer, clear colour and blend state (ids must not blend).
-    White (0xFFFFFF) is reserved as the miss value -> ids 0..PICK_MAX_ID (0xFFFFFE) are valid.
+    ZERO ALLOCATION (v1.4.1): restores blend (isEnabled boolean), the sink's clear colour
+    (JS mirror), and the default draw framebuffer -- no allocating getParameter. Throws a
+    RangeError when the top index (count-1) would reach/pass the reserved miss rather than
+    aliasing it (ids must not blend). White (0xFFFFFF) is the miss value -> indices
+    0..PICK_MAX_ID (0xFFFFFE) are valid, i.e. counts up to PICK_MAX_ID + 1.
     Overlaps resolve last-drawn-wins; pick is per-sink, so for cross-field picking call it on
     each field in z-order.
 
@@ -136,6 +148,42 @@ blend disabled during the ID pass, framebuffer/clear-colour/blend restored, scis
 A frame re-projects in place and uploads only the dirty float window -- no
 allocation. Verified: 60 frames of full 1M-point re-projection with the backing
 Float32Array reference unchanged and the engine pool counters flat.
+
+## v1.4.1 -- shipped surface fixes + fail-closed hardening + zero-alloc pick + the torture gate
+
+- GL.d.ts now compiles under default tsc: removed a duplicate LAYOUT block (TS2451). The
+  surviving block carries POINT_HI: 10.
+- README headline install fixed: import from the exported "@zakkster/lite-gl/backend" subpath
+  (the raw backend filename is not in the exports map).
+- export const VERSION = "1.4.1" added to GL.js (version now in package.json + GL.js + llms.txt).
+
+FAIL CLOSED (GL2). Validation lives at construction only; the hot bodies gain zero branches.
+- createField now rejects a non-positive-integer stride (throws naming the LAYOUT strides),
+  an unknown key (throws with a did-you-mean, e.g. strid -> stride), and a capacity present
+  but not positive. capacity: 0 was previously an implicit "use default 1024" and is now
+  rejected as a degenerate input (null is not zero).
+- reactiveField().flush() after dispose() is a no-op (mirrors the frame() guard).
+- flush clamps a post-shrink stale dirty range to [dLo, min(dHi, count-1)] -- never uploads
+  past the active count. No allocation.
+- pick() throws a RangeError over PICK_MAX_ID (0xFFFFFE) instead of aliasing the reserved miss.
+
+ZERO-ALLOC PICK (GL3). pickAt no longer calls getParameter(COLOR_CLEAR_VALUE) (a fresh
+Float32Array every call). Clear colour is restored from the sink's JS mirror -- set it with
+the new sink.setClearColor(r, g, b, a) (the sink owns the write) -- blend from the
+non-allocating isEnabled boolean, and the picker's ensure() result object is reused. Measured
+0 B/op over 100k picks per layout. Pick correctness (decode/miss/oob/state-restore) unchanged.
+
+- test/torture.mjs: the node --expose-gc gate (lite-leak + lite-gc-profiler). Tiers
+  T0/T1/T2/T3/T4/T5/T6/T7/T9. `npm run test:torture`. T6 proves bytes-per-op == 0 and
+  maxMajor == 0 over 1M frames of project+flush+draw AND the now-real pick sub-gate for
+  POINT/POINT_HI/QUAD/LINE; T3 grows across a pow2 boundary mid-dirty-range; T4 covers
+  post-dispose flush, double-dispose, context-loss re-seed and program-cache refcount; T5 is
+  a differential fuzz vs a naive full-upload oracle; T7 is the 1M soak + create/dispose
+  conservation.
+
+NOTE: hot-path change, intentional and gated. pickAt was rewritten (GL-05) and flush gained
+the N-3 clamp -- both SHAs change. project/push/set/writePointHi executable logic is
+unchanged from v1.4.0 (only an inline writePointHi comment was softened).
 
 ## v1.4.0 — deep-zoom precision (LAYOUT.POINT_HI + createPointHiSink)
 

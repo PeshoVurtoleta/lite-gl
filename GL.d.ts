@@ -3,12 +3,8 @@
  * Core (this file) is renderer-agnostic and tested; the WebGL2 sink is GLBackend.js.
  */
 
-/** floats-per-instance presets (x, y, then per-primitive attributes). */
-export declare const LAYOUT: {
-    readonly POINT: 8;
-    readonly QUAD: 9;
-    readonly LINE: 9;
-};
+/** Package version. Kept in sync with package.json and llms.txt. */
+export const VERSION: "1.4.1";
 
 /** Fills `stride` floats of `data` starting at `base`. Must not allocate (hot path). */
 export type WriteFn = (data: Float32Array, base: number) => void;

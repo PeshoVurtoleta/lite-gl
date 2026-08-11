@@ -9,7 +9,7 @@
  */
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createPointSink, createQuadSink, createLineSink, createPointHiSink } from "../GLBackend.js";
+import { createPointSink, createQuadSink, createLineSink, createPointHiSink, PICK_MAX_ID } from "../GLBackend.js";
 import { createField, LAYOUT, writePointHi, hiOf, loOf } from "../GL.js";
 
 // Minimal WebGL2 mock: distinct numeric enums, fake objects for create*, a call log.
@@ -651,6 +651,54 @@ test("pick() must not disturb the visible frame: blend off during the ID pass, a
     assert.ok(clearWhite, "ID target cleared to white (miss)");
     assert.deepEqual(gl.__clearColor, [0, 0, 0, 0], "the app's clear colour is restored");
     assert.equal(gl.__boundFbo, null, "the previously bound framebuffer (the canvas) is rebound");
+});
+
+test("pick() restores a non-default clear colour from the sink's JS mirror, no allocating getParameter (GL-05)", () => {
+    const gl = makeGL();
+    const sink = createPointSink(gl, { capacity: 16 });
+    sink.resize(640, 480);
+    sink.draw(50);
+
+    // The app declares a non-default clear colour THROUGH the sink (it owns the write),
+    // and enables blend directly on the context.
+    sink.setClearColor(0.1, 0.2, 0.3, 1);
+    gl.enable(gl.BLEND);
+    gl.__boundFbo = null;
+    assert.deepEqual(gl.__clearColor, [0.1, 0.2, 0.3, 1], "setClearColor applied the write");
+
+    const getParamsBefore = gl.count("getParameter");
+    gl.__pixel = [9, 0, 0, 255];
+    assert.equal(sink.pick(100, 100), 9);
+
+    // Post-pick state equals pre-pick state -- asserted WITHOUT getParameter.
+    assert.deepEqual(gl.__clearColor, [0.1, 0.2, 0.3, 1], "the mirror restored the exact clear colour");
+    assert.equal(gl.__blend, true, "blend restored");
+    assert.equal(gl.__boundFbo, null, "default draw framebuffer restored");
+    // GL-05: the pick path reads no COLOR_CLEAR_VALUE (the only allocating getParameter).
+    for (const c of gl.all("getParameter")) {
+        assert.notEqual(c.args[0], gl.COLOR_CLEAR_VALUE, "pick must not read COLOR_CLEAR_VALUE (allocates a Float32Array)");
+    }
+    assert.ok(gl.count("getParameter") - getParamsBefore === 0, "pick issues no getParameter at all");
+});
+
+test("pick() fails closed over PICK_MAX_ID: a 24-bit ID buffer cannot address past the cap without aliasing", () => {
+    const gl = makeGL();
+    const sink = createPointSink(gl, { capacity: 16 });
+    sink.resize(640, 480);
+
+    // Valid indices are 0..count-1. A count of PICK_MAX_ID + 1 has top index
+    // PICK_MAX_ID (0xFFFFFE), still distinct from the miss sentinel (0xFFFFFF) -> allowed.
+    gl.__pixel = [1, 0, 0, 255];
+    assert.equal(sink.pick(10, 10, PICK_MAX_ID + 1), 1, "count PICK_MAX_ID+1 (top index PICK_MAX_ID) is allowed");
+
+    const reads = gl.count("readPixels");
+    // A count of PICK_MAX_ID + 2 has top index 0xFFFFFF == the reserved miss -> must throw.
+    assert.throws(
+        () => sink.pick(10, 10, PICK_MAX_ID + 2),
+        /PICK_MAX_ID/,
+        "a count whose top index reaches the miss sentinel throws rather than aliasing 0xFFFFFF"
+    );
+    assert.equal(gl.count("readPixels"), reads, "the over-cap pick does no GL work before throwing");
 });
 
 test("pick() honours the scissor rect, so a hover cannot hit a neighbouring pane", () => {
