@@ -1012,7 +1012,7 @@ async function tierT8() {
         const cap = 512;
         const gl = silentGL();
         const counter = makeCounter();
-        // Two attach paths: option at construction (even) vs setCounters (odd).
+        // Two attach paths: setCounters (even) vs option at construction (odd).
         let sink;
         if ((li & 1) === 0) {
             sink = L.make(gl, cap);

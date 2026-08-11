@@ -173,7 +173,7 @@ On each frame the sink calls counters.recordUpload(floatCount) after a bufferSub
 PRIMITIVE NUMBERS only -- no per-call object. When no counters are attached the guard is
 a single truthiness check and the path allocates nothing: the core hot functions
 (field.flush, writePointHi) are byte-identical to v1.4.1 (SHA parity holds), and the
-torture T6 zero-alloc gate is green both WITH and WITHOUT counters attached (0 B/op).
+torture T8 zero-alloc gate is green both WITH and WITHOUT counters attached (0 B/op).
 A bad handle (non-null, missing recordUpload/recordDraw) throws at attach time (fail closed).
 
 DIRTY-RANGE GATE (GL7). test/gates/dirty-range.mjs is a headless, GPU-free build gate:
