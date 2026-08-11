@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>lite-gl · oscilloscope</title>
+    <title>lite-gl &middot; oscilloscope</title>
     <style>
         :root {
             --bg-0: #07090d;
@@ -432,9 +432,9 @@
 <body>
 <div id="app">
     <header class="top">
-        <div class="brand"><span class="mark">◐</span><span class="pkg">@zakkster/lite-gl</span><span
+        <div class="brand"><span class="mark">&#9680;</span><span class="pkg">@zakkster/lite-gl</span><span
                 class="ver">v1.0.0</span></div>
-        <div class="tagline"><span class="dot"></span>oscilloscope · instanced points on the reactive graph</div>
+        <div class="tagline"><span class="dot"></span>oscilloscope &middot; instanced points on the reactive graph</div>
     </header>
 
     <nav class="tabs" id="tabs">
@@ -448,23 +448,23 @@
             <div class="stage" id="points-stage">
                 <canvas id="points-canvas"></canvas>
                 <div class="nogl" id="points-nogl">WebGL2 is unavailable in this browser.</div>
-                <div class="stage-overlay tl"><span class="label">live points</span><br><span id="points-count">—</span>
+                <div class="stage-overlay tl"><span class="label">live points</span><br><span id="points-count">&mdash;</span>
                 </div>
                 <div class="stage-overlay tr"><span class="label">frames / sec</span><span class="big"
-                                                                                           id="points-fps">—</span>
+                                                                                           id="points-fps">&mdash;</span>
                 </div>
-                <div class="stage-overlay bl"><span class="label">one instanced draw call · positions projected in a reactive effect</span>
+                <div class="stage-overlay bl"><span class="label">one instanced draw call &middot; positions projected in a reactive effect</span>
                 </div>
                 <div class="stage-overlay br"><span class="label">upload / frame</span><br><span id="points-upload"
-                                                                                                 class="accent-cyan">—</span>
+                                                                                                 class="accent-cyan">&mdash;</span>
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 01 · million points</div>
+                <div class="panel-head">scene 01 &middot; million points</div>
                 <section>
                     <h3>action</h3>
                     <div class="btn-row">
-                        <button class="btn primary" id="points-play">❚❚ pause</button>
+                        <button class="btn primary" id="points-play">&#10074;&#10074; pause</button>
                         <button class="btn" id="points-reseed">reseed</button>
                     </div>
                     <p class="help-line">A signal advances the animation phase; a tracked <code>project()</code>
@@ -491,7 +491,7 @@
                     <div class="metrics">
                         <div class="metric">
                             <div class="k">frame</div>
-                            <div class="v accent-green" id="points-ms">— ms</div>
+                            <div class="v accent-green" id="points-ms">&mdash; ms</div>
                         </div>
                         <div class="metric">
                             <div class="k">draw calls</div>
@@ -499,10 +499,10 @@
                         </div>
                         <div class="metric">
                             <div class="k">uploaded</div>
-                            <div class="v accent-amber" id="points-bytes">— KB</div>
+                            <div class="v accent-amber" id="points-bytes">&mdash; KB</div>
                         </div>
                         <div class="metric">
-                            <div class="k">graph alloc Δ</div>
+                            <div class="k">graph alloc &Delta;</div>
                             <div class="v" id="points-alloc">0 B</div>
                         </div>
                     </div>
@@ -515,21 +515,21 @@
             <div class="stage" id="diff-stage">
                 <canvas id="diff-canvas"></canvas>
                 <div class="nogl" id="diff-nogl">WebGL2 is unavailable in this browser.</div>
-                <div class="stage-overlay tl"><span class="label">buffer</span><br><span id="diff-total">—</span></div>
+                <div class="stage-overlay tl"><span class="label">buffer</span><br><span id="diff-total">&mdash;</span></div>
                 <div class="stage-overlay tr"><span class="label">uploaded this frame</span><span
-                        class="big accent-amber" id="diff-pct">—</span></div>
+                        class="big accent-amber" id="diff-pct">&mdash;</span></div>
                 <div class="stage-overlay br"><span class="label">a moving band re-uploads; the rest of the buffer is untouched</span>
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 02 · dirty upload</div>
+                <div class="panel-head">scene 02 &middot; dirty upload</div>
                 <section>
                     <h3>action</h3>
                     <div class="btn-row">
-                        <button class="btn primary" id="diff-play">❚❚ pause</button>
+                        <button class="btn primary" id="diff-play">&#10074;&#10074; pause</button>
                     </div>
-                    <p class="help-line">Only a sweeping band of points changes each frame. <code>field.set(i, …)</code>
-                        marks just those rows dirty, so <code>bufferSubData</code> uploads that window — not the whole
+                    <p class="help-line">Only a sweeping band of points changes each frame. <code>field.set(i, &hellip;)</code>
+                        marks just those rows dirty, so <code>bufferSubData</code> uploads that window &mdash; not the whole
                         buffer.</p>
                 </section>
                 <section>
@@ -543,11 +543,11 @@
                     <div class="metrics" style="margin-top:0.6rem">
                         <div class="metric">
                             <div class="k">dirty floats</div>
-                            <div class="v accent-amber" id="diff-floats">—</div>
+                            <div class="v accent-amber" id="diff-floats">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">vs full buffer</div>
-                            <div class="v accent-cyan" id="diff-ratio">—</div>
+                            <div class="v accent-cyan" id="diff-ratio">&mdash;</div>
                         </div>
                     </div>
                 </section>

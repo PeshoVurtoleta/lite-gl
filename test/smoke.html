@@ -18,8 +18,22 @@
 <ul id="checks"></ul>
 <canvas id="c" width="64" height="64"></canvas>
 
+<!--
+  GL.js (pulled in for writePointHi) and lite-raf import the bare specifiers
+  @zakkster/lite-signal / @zakkster/lite-raf. A browser cannot resolve bare
+  specifiers without a map; the smoke server serves the package root, so point
+  each at its node_modules ESM entry. This is a test-harness concern only.
+-->
+<script type="importmap">
+{
+  "imports": {
+    "@zakkster/lite-signal": "/node_modules/@zakkster/lite-signal/Signal.js",
+    "@zakkster/lite-raf": "/node_modules/@zakkster/lite-raf/RAF.js"
+  }
+}
+</script>
 <script type="module">
-import { createPointSink, createPointHiSink } from "../GLBackend.js";
+import { createPointSink, createPointHiSink, createQuadSink, createLineSink } from "../GLBackend.js";
 import { writePointHi } from "../GL.js";
 
 const checks = [];
@@ -31,6 +45,18 @@ function writePoint(arr, i, x, y, s, r, g, b, a) {
     const b0 = i * 8;
     arr[b0] = x; arr[b0 + 1] = y; arr[b0 + 2] = s;
     arr[b0 + 3] = r; arr[b0 + 4] = g; arr[b0 + 5] = b; arr[b0 + 6] = a; arr[b0 + 7] = 0;
+}
+// stride-9 quad writer: x, y, w, h, rot, r, g, b, a  -- LAYOUT.QUAD (screen px)
+function writeQuad(arr, i, x, y, w, h, rot, r, g, b, a) {
+    const b0 = i * 9;
+    arr[b0] = x; arr[b0 + 1] = y; arr[b0 + 2] = w; arr[b0 + 3] = h; arr[b0 + 4] = rot;
+    arr[b0 + 5] = r; arr[b0 + 6] = g; arr[b0 + 7] = b; arr[b0 + 8] = a;
+}
+// stride-9 line writer: x0, y0, x1, y1, width, r, g, b, a  -- LAYOUT.LINE (screen px)
+function writeLine(arr, i, x0, y0, x1, y1, width, r, g, b, a) {
+    const b0 = i * 9;
+    arr[b0] = x0; arr[b0 + 1] = y0; arr[b0 + 2] = x1; arr[b0 + 3] = y1; arr[b0 + 4] = width;
+    arr[b0 + 5] = r; arr[b0 + 6] = g; arr[b0 + 7] = b; arr[b0 + 8] = a;
 }
 // screen-pixel (x,y) -> readPixels window pixel (origin bottom-left); shader flips y.
 const win = (x, y) => [x, SIZE - y];
@@ -50,7 +76,17 @@ async function run() {
     const read = (x, y) => { gl.readPixels(x, y, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); return px; };
     const lit = (x, y) => read(x, y)[0] > 200;
     const dark = (x, y) => read(x, y)[0] < 40;
+    const litCh = (x, y, ch) => read(x, y)[ch] > 200;   // ch: 0=R,1=G,2=B
+    const darkCh = (x, y, ch) => read(x, y)[ch] < 40;
     const clear = () => { gl.clearColor(0, 0, 0, 1); gl.clear(gl.COLOR_BUFFER_BIT); };
+
+    // Resolve a context-loss event or time out (false) instead of hanging. Shared by the
+    // POINT and POINT_HI context-loss cases below.
+    const raceBool = (p, ms) => new Promise((resolve) => {
+        let done = false;
+        const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, ms);
+        p.then(() => { if (!done) { done = true; clearTimeout(t); resolve(true); } });
+    });
 
     // 1) a single white point at the centre must light the centre pixel.
     const one = new Float32Array(8);
@@ -88,11 +124,6 @@ async function run() {
     if (!ext) {
         add("recovers from context loss", null, "WEBGL_lose_context unavailable in this browser (skipped)");
     } else {
-        const raceBool = (p, ms) => new Promise((resolve) => {
-            let done = false;
-            const t = setTimeout(() => { if (!done) { done = true; resolve(false); } }, ms);
-            p.then(() => { if (!done) { done = true; clearTimeout(t); resolve(true); } });
-        });
         const lostEvent = new Promise((resolve) =>
             canvas.addEventListener("webglcontextlost", () => resolve(), { once: true }));
         const restored = new Promise((resolve) => {
@@ -127,6 +158,51 @@ async function run() {
 
     sink.dispose();
 
+    // 4b) QUAD (v1.1): instanced unit quad, TRIANGLE_STRIP + vertexAttribDivisor. Only a
+    //     real driver exercises the base-geometry/divisor wiring and the pick decode; the
+    //     mock-GL unit tests confirm the call SEQUENCE, not the pixels. Two axis-aligned red
+    //     quads, well separated, so each owns its centre pixel and its pick id is unambiguous.
+    const quad = createQuadSink(gl, { capacity: 1024 });
+    quad.resize(SIZE, SIZE);
+    add("quad sink constructs + program links", gl.getError() === 0);
+
+    const quads = new Float32Array(2 * 9);
+    writeQuad(quads, 0, 20, 32, 16, 16, 0, 1, 0, 0, 1);   // quad 0: red, left
+    writeQuad(quads, 1, 44, 32, 16, 16, 0, 1, 0, 0, 1);   // quad 1: red, right
+    clear(); quad.upload(quads, 0, 18); quad.draw(2);
+    const q0 = win(20, 32), q1 = win(44, 32), qMid = win(32, 8);
+    add("quad renders red coverage at both centres",
+        litCh(q0[0], q0[1], 0) && darkCh(q0[0], q0[1], 1) && litCh(q1[0], q1[1], 0) && gl.getError() === 0,
+        "q0 RGBA = " + Array.from(read(q0[0], q0[1])).join(","));
+    add("quad leaves the gap between instances dark", darkCh(qMid[0], qMid[1], 0),
+        "gap RGBA = " + Array.from(read(qMid[0], qMid[1])).join(","));
+    add("quad pick decodes instance 0", quad.pick(20, 32, 2) === 0, "pick(20,32) = " + quad.pick(20, 32, 2));
+    add("quad pick decodes instance 1", quad.pick(44, 32, 2) === 1, "pick(44,32) = " + quad.pick(44, 32, 2));
+    add("quad pick misses empty space", quad.pick(32, 60, 2) === -1);
+    quad.dispose();
+
+    // 4c) LINE (v1.2): instanced thick segment expanded from a static (t,s) base into a
+    //     screen quad in the VS. Two horizontal green segments at distinct rows; each row's
+    //     midpoint must be green and its pick id must decode to that segment.
+    const line = createLineSink(gl, { capacity: 1024 });
+    line.resize(SIZE, SIZE);
+    add("line sink constructs + program links", gl.getError() === 0);
+
+    const lines = new Float32Array(2 * 9);
+    writeLine(lines, 0, 10, 20, 54, 20, 8, 0, 1, 0, 1);   // line 0: green, top row
+    writeLine(lines, 1, 10, 44, 54, 44, 8, 0, 1, 0, 1);   // line 1: green, bottom row
+    clear(); line.upload(lines, 0, 18); line.draw(2);
+    const l0 = win(32, 20), l1 = win(32, 44), lMid = win(32, 32);
+    add("line renders green coverage along both segments",
+        litCh(l0[0], l0[1], 1) && darkCh(l0[0], l0[1], 0) && litCh(l1[0], l1[1], 1) && gl.getError() === 0,
+        "l0 RGBA = " + Array.from(read(l0[0], l0[1])).join(","));
+    add("line leaves the gap between segments dark", darkCh(lMid[0], lMid[1], 1),
+        "gap RGBA = " + Array.from(read(lMid[0], lMid[1])).join(","));
+    add("line pick decodes instance 0", line.pick(32, 20, 2) === 0, "pick(32,20) = " + line.pick(32, 20, 2));
+    add("line pick decodes instance 1", line.pick(32, 44, 2) === 1, "pick(32,44) = " + line.pick(32, 44, 2));
+    add("line pick misses empty space", line.pick(2, 2, 2) === -1);
+    line.dispose();
+
     // 5) POINT_HI (v1.4.0): world coordinates + GPU camera. This is the path that a
     //    mock-GL unit test cannot cover -- it only fails when a real driver LINKS the
     //    shaders. Both the visible program and the ID-pick program must link; pick()
@@ -158,6 +234,48 @@ async function run() {
     add("pointHi pick pass links (no v_id int/uint mismatch)", pickThrew === "", pickThrew);
     add("pointHi pick returns the hit instance", hiPick === 0, "pick(32,32) = " + hiPick);
     add("pointHi pick misses empty space", hi.pick(2, 2, 1) === -1);
+
+    // 6) POINT_HI context loss + restore (parity with the POINT case above). The GPU
+    //    buffer is recreated empty on restore; re-uploading the world row + re-setting the
+    //    camera must bring the centre point back. Same SKIP-not-FAIL discipline for headless
+    //    software GL that cannot simulate loss/restore. The camera path (setCamera) is the
+    //    part a mock-GL test cannot cover -- only a real driver re-links POINT_HI_VS.
+    const hiExt = gl.getExtension("WEBGL_lose_context");
+    if (!hiExt) {
+        add("pointHi recovers from context loss", null, "WEBGL_lose_context unavailable in this browser (skipped)");
+    } else {
+        const hiLost = new Promise((resolve) =>
+            canvas.addEventListener("webglcontextlost", () => resolve(), { once: true }));
+        const hiRestored = new Promise((resolve) => {
+            const off = hi.onContextRestored(() => {
+                off();
+                clear();
+                writePointHi(hiRow, 0, T0, 0, 24, 1, 1, 1, 1);
+                hi.setCamera(T0, 0, 1, 1, 32, 32);
+                hi.upload(hiRow, 0, 10); hi.draw(1);
+                resolve();
+            });
+        });
+
+        hiExt.loseContext();
+        const hiLostFired = await raceBool(hiLost, 3000);
+        if (!hiLostFired) {
+            add("pointHi recovers from context loss", null,
+                "webglcontextlost did not fire (environment cannot simulate context loss)");
+        } else {
+            add("pointHi draw is suppressed while context is lost", hi.isContextLost() === true);
+            await new Promise((r) => setTimeout(r, 50));   // let the loss settle before restoring
+            hiExt.restoreContext();
+            const hiRestoredFired = await raceBool(hiRestored, 3000);
+            if (!hiRestoredFired) {
+                add("pointHi recovers from context loss (re-seeded draw)", null,
+                    "webglcontextrestored did not fire within 3s -- headless software GL often cannot restore; verify in a real browser");
+            } else {
+                add("pointHi recovers from context loss (re-seeded draw)", lit(32, 32) && gl.getError() === 0,
+                    "centre lit again after restore");
+            }
+        }
+    }
 
     hi.dispose();
     finish();

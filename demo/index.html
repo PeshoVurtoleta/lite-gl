@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>lite-gl · oscilloscope</title>
+    <title>lite-gl &middot; oscilloscope</title>
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@300;400;500;700&family=Space+Mono:wght@400;700&display=swap"
           rel="stylesheet">
@@ -473,11 +473,11 @@
 <div id="app">
     <header class="top">
         <div class="brand">
-            <span class="mark">◐</span>
+            <span class="mark">&#9680;</span>
             <span class="pkg">@zakkster/lite-gl</span>
             <span class="ver">v1.4.0</span>
         </div>
-        <div class="tagline"><span class="dot"></span>oscilloscope · instanced GPU renderer</div>
+        <div class="tagline"><span class="dot"></span>oscilloscope &middot; instanced GPU renderer</div>
     </header>
 
     <nav class="tabs" id="tabs">
@@ -490,13 +490,13 @@
     </nav>
 
     <main>
-        <!-- ─── SCENE 01: FIELD (points, reactive camera) ─── -->
+        <!-- --- SCENE 01: FIELD (points, reactive camera) --- -->
         <section class="scene" data-scene="field" data-active>
             <div class="stage" id="field-stage">
                 <canvas id="field-canvas"></canvas>
                 <div class="no-webgl" id="field-nogl">WebGL2 unavailable in this browser.</div>
                 <div class="stage-overlay tl">
-                    <span class="label">de jong attractor · GL_POINTS</span>
+                    <span class="label">de jong attractor &middot; GL_POINTS</span>
                 </div>
                 <div class="stage-overlay tr">
                     <span class="label">points on gpu</span>
@@ -510,19 +510,19 @@
                     </div>
                 </div>
                 <div class="stage-overlay br">
-                    <span class="label">drag to pan · scroll to zoom</span>
+                    <span class="label">drag to pan &middot; scroll to zoom</span>
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 01 · reactive field</div>
+                <div class="panel-head">scene 01 &middot; reactive field</div>
                 <section>
                     <p class="help-line">
                         A camera <code>signal</code> drives <code>reactiveField</code>: pan or zoom and the
-                        whole field re-projects and redraws in <strong>one upload + one draw</strong> — zero
+                        whole field re-projects and redraws in <strong>one upload + one draw</strong> &mdash; zero
                         allocation. Idle with auto-rotate off and it redraws <strong>nothing</strong>.
                     </p>
                     <div class="btn-row">
-                        <button class="btn primary" id="field-rotate" aria-pressed="true">◐ auto-rotate</button>
+                        <button class="btn primary" id="field-rotate" aria-pressed="true">&#9680; auto-rotate</button>
                         <button class="btn" id="field-reset">reset view</button>
                     </div>
                 </section>
@@ -546,7 +546,7 @@
                         </div>
                         <div class="metric">
                             <div class="k">zoom</div>
-                            <div class="v amber" id="field-zoom">1.00×</div>
+                            <div class="v amber" id="field-zoom">1.00&times;</div>
                         </div>
                         <div class="metric">
                             <div class="k">upload / frame</div>
@@ -557,13 +557,13 @@
             </aside>
         </section>
 
-        <!-- ─── SCENE 02: LORENZ RIBBON (lines) ─── -->
+        <!-- --- SCENE 02: LORENZ RIBBON (lines) --- -->
         <section class="scene" data-scene="lorenz">
             <div class="stage" id="lorenz-stage">
                 <canvas id="lorenz-canvas"></canvas>
                 <div class="no-webgl" id="lorenz-nogl">WebGL2 unavailable in this browser.</div>
                 <div class="stage-overlay tl">
-                    <span class="label">lorenz attractor · thick LINE segments</span>
+                    <span class="label">lorenz attractor &middot; thick LINE segments</span>
                 </div>
                 <div class="stage-overlay tr">
                     <span class="label">segments on gpu</span>
@@ -577,20 +577,20 @@
                     </div>
                 </div>
                 <div class="stage-overlay br">
-                    <span class="label">drag to pan · scroll to zoom</span>
+                    <span class="label">drag to pan &middot; scroll to zoom</span>
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 02 · reactive polyline</div>
+                <div class="panel-head">scene 02 &middot; reactive polyline</div>
                 <section>
                     <p class="help-line">
-                        One continuous trajectory traced as thick <code>createLineSink</code> segments —
+                        One continuous trajectory traced as thick <code>createLineSink</code> segments &mdash;
                         each expanded to a screen-space quad in the vertex shader from <code>p0</code>/<code>p1</code>
                         + width. The same camera <code>signal</code> re-projects <strong>every segment</strong>
                         in one upload + <strong>one instanced draw</strong>, allocation-free.
                     </p>
                     <div class="btn-row">
-                        <button class="btn primary" id="lorenz-rotate" aria-pressed="true">◐ auto-rotate</button>
+                        <button class="btn primary" id="lorenz-rotate" aria-pressed="true">&#9680; auto-rotate</button>
                         <button class="btn" id="lorenz-reset">reset view</button>
                     </div>
                 </section>
@@ -618,7 +618,7 @@
                         </div>
                         <div class="metric">
                             <div class="k">zoom</div>
-                            <div class="v amber" id="lorenz-zoom">1.00×</div>
+                            <div class="v amber" id="lorenz-zoom">1.00&times;</div>
                         </div>
                         <div class="metric">
                             <div class="k">draw calls</div>
@@ -629,12 +629,12 @@
             </aside>
         </section>
 
-        <!-- ─── SCENE 03: BARS (quads) ─── -->
+        <!-- --- SCENE 03: BARS (quads) --- -->
         <section class="scene" data-scene="bars">
             <div class="stage" id="bars-stage">
                 <canvas id="bars-canvas"></canvas>
                 <div class="no-webgl" id="bars-nogl">WebGL2 unavailable in this browser.</div>
-                <div class="stage-overlay tl"><span class="label">instanced quads · TRIANGLE_STRIP</span></div>
+                <div class="stage-overlay tl"><span class="label">instanced quads &middot; TRIANGLE_STRIP</span></div>
                 <div class="stage-overlay tr">
                     <span class="label">quads / draw call</span>
                     <span class="big magenta" id="bars-quads">0</span>
@@ -647,7 +647,7 @@
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 03 · quad spectrum</div>
+                <div class="panel-head">scene 03 &middot; quad spectrum</div>
                 <section>
                     <p class="help-line">
                         <code>createQuadSink</code> renders sized + rotated quads via <code>vertexAttribDivisor</code>.
@@ -662,7 +662,7 @@
                         <input type="range" id="bars-n" min="24" max="480" step="8" value="128">
                     </div>
                     <div class="field">
-                        <label>speed <span class="field-value" id="bars-speed-v">1.0×</span></label>
+                        <label>speed <span class="field-value" id="bars-speed-v">1.0&times;</span></label>
                         <input type="range" id="bars-speed" min="0" max="30" step="1" value="10">
                     </div>
                 </section>
@@ -682,24 +682,24 @@
             </aside>
         </section>
 
-        <!-- ─── SCENE 03: DIRTY WINDOW (quads) ─── -->
+        <!-- --- SCENE 03: DIRTY WINDOW (quads) --- -->
         <section class="scene" data-scene="dirty">
             <div class="stage" id="dirty-stage">
                 <canvas id="dirty-canvas"></canvas>
                 <div class="no-webgl" id="dirty-nogl">WebGL2 unavailable in this browser.</div>
-                <div class="stage-overlay tl"><span class="label">dirty-range upload · bufferSubData</span></div>
+                <div class="stage-overlay tl"><span class="label">dirty-range upload &middot; bufferSubData</span></div>
                 <div class="stage-overlay tr">
                     <span class="label">uploaded / total</span>
                     <span class="big" id="dirty-pct">0%</span>
                 </div>
-                <div class="stage-overlay br"><span class="label" id="dirty-window">window —</span></div>
+                <div class="stage-overlay br"><span class="label" id="dirty-window">window &mdash;</span></div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 04 · upload only what changed</div>
+                <div class="panel-head">scene 04 &middot; upload only what changed</div>
                 <section>
                     <p class="help-line">
                         The bright band is the only thing that changed this frame. The whole grid is drawn,
-                        but <code>flush</code> ships just the dirty float window to the GPU —
+                        but <code>flush</code> ships just the dirty float window to the GPU &mdash;
                         the other <span id="dirty-rest">~98%</span> is never re-uploaded.
                     </p>
                 </section>
@@ -737,35 +737,35 @@
                 </section>
             </aside>
         </section>
-        <!-- ─── SCENE 05: SPLIT SCOPE (multi-field + scissor panes + GPU picking) ─── -->
+        <!-- --- SCENE 05: SPLIT SCOPE (multi-field + scissor panes + GPU picking) --- -->
         <section class="scene" data-scene="split">
             <div class="stage" id="split-stage">
                 <canvas id="split-canvas"></canvas>
                 <div class="no-webgl" id="split-nogl">WebGL2 unavailable in this browser.</div>
-                <div class="stage-overlay tl"><span class="label">pane A · LINE + POINT</span></div>
+                <div class="stage-overlay tl"><span class="label">pane A &middot; LINE + POINT</span></div>
                 <div class="stage-overlay tr">
                     <span class="label">hovered instance</span>
-                    <span class="big magenta" id="split-hit">—</span>
+                    <span class="big magenta" id="split-hit">&mdash;</span>
                 </div>
                 <div class="stage-overlay bl">
-                    <span class="label" id="split-panes">1 canvas · 1 context · 4 fields · 3 programs</span>
+                    <span class="label" id="split-panes">1 canvas &middot; 1 context &middot; 4 fields &middot; 3 programs</span>
                 </div>
                 <div class="stage-overlay br">
-                    <span class="label">move the pointer · picking is GPU-side</span>
+                    <span class="label">move the pointer &middot; picking is GPU-side</span>
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 05 · multi-field + picking</div>
+                <div class="panel-head">scene 05 &middot; multi-field + picking</div>
                 <section>
                     <p class="help-line">
-                        One canvas, one GL context, <strong>four fields</strong> — and only
+                        One canvas, one GL context, <strong>four fields</strong> &mdash; and only
                         <strong>three programs</strong>, because both point sinks share a cached one.
                         <code>setScissor</code> gives each pane its own region; <code>pick(x, y)</code>
                         runs an <strong>offscreen ID pass</strong> and reads back a single pixel, so hover
                         works at a million instances with <strong>no CPU hit-testing</strong>.
                     </p>
                     <div class="btn-row">
-                        <button class="btn primary" id="split-rotate" aria-pressed="true">◐ auto-rotate</button>
+                        <button class="btn primary" id="split-rotate" aria-pressed="true">&#9680; auto-rotate</button>
                         <button class="btn" id="split-swap">swap panes</button>
                     </div>
                 </section>
@@ -774,11 +774,11 @@
                     <div class="metrics">
                         <div class="metric">
                             <div class="k">pane</div>
-                            <div class="v cyan" id="split-pane">—</div>
+                            <div class="v cyan" id="split-pane">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">index</div>
-                            <div class="v magenta" id="split-idx">—</div>
+                            <div class="v magenta" id="split-idx">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">picks / sec</div>
@@ -811,22 +811,22 @@
                 <canvas id="deep-canvas"></canvas>
                 <div class="no-webgl" id="deep-nogl">WebGL2 unavailable in this browser.</div>
                 <div class="stage-overlay tl">
-                    <span class="label">left · LAYOUT.POINT · world coords in float32</span>
+                    <span class="label">left &middot; LAYOUT.POINT &middot; world coords in float32</span>
                     <span class="label" id="deep-left-note">CPU re-projects every frame</span>
                 </div>
                 <div class="stage-overlay tr">
-                    <span class="label">right · LAYOUT.POINT_HI · GPU camera</span>
-                    <span class="big magenta" id="deep-hit">—</span>
+                    <span class="label">right &middot; LAYOUT.POINT_HI &middot; GPU camera</span>
+                    <span class="big magenta" id="deep-hit">&mdash;</span>
                 </div>
                 <div class="stage-overlay bl">
-                    <span class="label" id="deep-span">viewport spans —</span>
+                    <span class="label" id="deep-span">viewport spans &mdash;</span>
                 </div>
                 <div class="stage-overlay br">
-                    <span class="label">drag to pan · wheel to zoom · hover the right pane</span>
+                    <span class="label">drag to pan &middot; wheel to zoom &middot; hover the right pane</span>
                 </div>
             </div>
             <aside class="panel">
-                <div class="panel-head">scene 06 · deep-zoom precision</div>
+                <div class="panel-head">scene 06 &middot; deep-zoom precision</div>
                 <section>
                     <p class="help-line">
                         Two panes, the <strong>same 400k timestamps</strong>. Left holds them as
@@ -834,11 +834,11 @@
                         Right uses <code>LAYOUT.POINT_HI</code>: coordinates split hi/lo, uploaded
                         <strong>once</strong>, camera in the vertex shader.
                         Zoom in. Watch the left pane <strong>snap onto a lattice</strong> the moment the
-                        float32 ULP exceeds one pixel — and watch its upload counter climb while the
+                        float32 ULP exceeds one pixel &mdash; and watch its upload counter climb while the
                         right one never moves again.
                     </p>
                     <div class="btn-row">
-                        <button class="btn primary" id="deep-drift" aria-pressed="true">◐ auto-pan</button>
+                        <button class="btn primary" id="deep-drift" aria-pressed="true">&#9680; auto-pan</button>
                         <button class="btn" id="deep-reset">reset view</button>
                     </div>
                 </section>
@@ -847,15 +847,15 @@
                     <div class="metrics">
                         <div class="metric">
                             <div class="k">float32 ULP @ camera</div>
-                            <div class="v amber" id="deep-ulp">—</div>
+                            <div class="v amber" id="deep-ulp">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">ms per pixel</div>
-                            <div class="v cyan" id="deep-mspx">—</div>
+                            <div class="v cyan" id="deep-mspx">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">float32 verdict</div>
-                            <div class="v" id="deep-verdict">—</div>
+                            <div class="v" id="deep-verdict">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">fps</div>
@@ -867,16 +867,16 @@
                     <h3>Cost of a pan</h3>
                     <div class="metrics">
                         <div class="metric">
-                            <div class="k">uploads · POINT</div>
+                            <div class="k">uploads &middot; POINT</div>
                             <div class="v magenta" id="deep-up-cpu">0</div>
                         </div>
                         <div class="metric">
-                            <div class="k">uploads · POINT_HI</div>
+                            <div class="k">uploads &middot; POINT_HI</div>
                             <div class="v green" id="deep-up-gpu">1</div>
                         </div>
                         <div class="metric">
                             <div class="k">CPU reproject</div>
-                            <div class="v amber" id="deep-cpu-ms">—</div>
+                            <div class="v amber" id="deep-cpu-ms">&mdash;</div>
                         </div>
                         <div class="metric">
                             <div class="k">MB re-uploaded</div>
@@ -910,7 +910,7 @@
   import { createField, reactiveField, LAYOUT, writePointHi, f32Ulp, needsHiPrecision } from "@zakkster/lite-gl";
   import { createPointSink, createQuadSink, createLineSink, createPointHiSink } from "@zakkster/lite-gl/backend";
 
-  // ─── hoisted consts + cached lookups (zero GC) ───────────────────────────
+  // --- hoisted consts + cached lookups (zero GC) ---------------------------
   const TAU = Math.PI * 2;
   const DPR = Math.min(2, window.devicePixelRatio || 1);
   const MAX_POINTS = 1_000_000;
@@ -921,7 +921,7 @@
 
   const $ = (id) => document.getElementById(id);
 
-  // ─── HUD writers: skip the string formatting AND the DOM write when the value has
+  // --- HUD writers: skip the string formatting AND the DOM write when the value has
   // not changed. The telemetry tick runs ~7.5x/sec forever, and toFixed()/fmt()/"+" all
   // mint fresh strings, so a value that is merely *stable* would still trickle garbage.
   // The last value is stashed on the element itself (a number -- no allocation).
@@ -949,6 +949,19 @@
       $el.textContent = s;
     }
   };
+  // Locale-formatted number, deduped on the raw number so a stable value skips both
+  // the toLocaleString() and the DOM write.
+  const hudLocale = ($el, v) => {
+    if ($el._v !== v) {
+      $el._v = v;
+      $el.textContent = v.toLocaleString();
+    }
+  };
+  // Text + className, each deduped independently (a verdict that flips changes both).
+  const hudTextClass = ($el, s, cls) => {
+    if ($el._t !== s) { $el._t = s; $el.textContent = s; }
+    if ($el._c !== cls) { $el._c = cls; $el.className = cls; }
+  };
 
   // Set a GL canvas to its CSS box in device pixels. Returns [w, h] in device px.
   function sizeGL(canvas) {
@@ -960,7 +973,7 @@
     return [w, h];
   }
 
-  // ─── shared pure logic (verified headlessly in verify/demo_logic.mjs) ─────
+  // --- shared pure logic (deterministic generators; no signals, no DOM) -----
   function genAttractor(N, a, b, c, d) {
     const wx = new Float64Array(N), wy = new Float64Array(N);
     let x = 0.1, y = 0.1;
@@ -1033,9 +1046,9 @@
     out[o + 2] = b / 255;
   }
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 01 · ATTRACTOR FIELD (points, signal-driven camera)
-  // ══════════════════════════════════════════════════════════════════════════
+  // ==========================================================================
+  // SCENE 01 - ATTRACTOR FIELD (points, signal-driven camera)
+  // ==========================================================================
   const field = (() => {
     const $canvas = $("field-canvas"), $nogl = $("field-nogl"), $stage = $("field-stage");
     const $count = $("field-count"), $fps = $("field-fps"), $redraws = $("field-redraws");
@@ -1167,7 +1180,7 @@
       if ((hudTick++ & 7) === 0) {
         hudFmt($count, fld.count);
         hudFmt($redraws, redraws);
-        hudFixed($zoomV, zoom(), 2, "×");
+        hudFixed($zoomV, zoom(), 2, "\u00D7");
         hudFmt($upload, lastUpload);
       }
       raf = requestAnimationFrame(frame);
@@ -1199,13 +1212,14 @@
       destroy() {
         this.stop();
         controls.abort();   // release this scene's pointer/wheel/input listeners
+        sink.dispose();     // free this scene's GL sink (VAO/VBOs/program refs)
       },
     };
   })();
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 02 · LORENZ RIBBON (lines, signal-driven camera)
-  // ══════════════════════════════════════════════════════════════════════════
+  // ==========================================================================
+  // SCENE 02 - LORENZ RIBBON (lines, signal-driven camera)
+  // ==========================================================================
   const lorenz = (() => {
     const $canvas = $("lorenz-canvas"), $nogl = $("lorenz-nogl");
     const $count = $("lorenz-count"), $fps = $("lorenz-fps"), $redraws = $("lorenz-redraws");
@@ -1349,7 +1363,7 @@
       if ((hudTick++ & 7) === 0) {
         hudFmt($count, fld.count);
         hudFmt($redraws, redraws);
-        hudFixed($zoomV, zoom(), 2, "×");
+        hudFixed($zoomV, zoom(), 2, "\u00D7");
         hudText($draws, "1");
       }
       raf = requestAnimationFrame(frame);
@@ -1381,13 +1395,14 @@
       destroy() {
         this.stop();
         controls.abort();   // release this scene's pointer/wheel/input listeners
+        sink.dispose();     // free this scene's GL sink (VAO/VBOs/program refs)
       },
     };
   })();
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 03 · QUAD SPECTRUM (bars + rotated caps)
-  // ══════════════════════════════════════════════════════════════════════════
+  // ==========================================================================
+  // SCENE 03 - QUAD SPECTRUM (bars + rotated caps)
+  // ==========================================================================
   const bars = (() => {
     const $canvas = $("bars-canvas"), $nogl = $("bars-nogl");
     const $quads = $("bars-quads"), $fps = $("bars-fps"), $draws = $("bars-draws");
@@ -1460,7 +1475,7 @@
     }, { signal: controls.signal });
     $speed.addEventListener("input", () => {
       speed = +$speed.value / 10;
-      $speedV.textContent = speed.toFixed(1) + "×";
+      $speedV.textContent = speed.toFixed(1) + "\u00D7";
     }, { signal: controls.signal });
 
     function frame() {
@@ -1510,13 +1525,14 @@
       destroy() {
         this.stop();
         controls.abort();   // release this scene's pointer/wheel/input listeners
+        sink.dispose();     // free this scene's GL sink (VAO/VBOs/program refs)
       },
     };
   })();
 
-  // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 04 · DIRTY WINDOW (upload only what changed)
-  // ══════════════════════════════════════════════════════════════════════════
+  // ==========================================================================
+  // SCENE 04 - DIRTY WINDOW (upload only what changed)
+  // ==========================================================================
   const dirty = (() => {
     const $canvas = $("dirty-canvas"), $nogl = $("dirty-nogl");
     const $pct = $("dirty-pct"), $fps = $("dirty-fps"), $cells = $("dirty-cells");
@@ -1662,14 +1678,15 @@
       destroy() {
         this.stop();
         controls.abort();   // release this scene's pointer/wheel/input listeners
+        sink.dispose();     // free this scene's GL sink (VAO/VBOs/program refs)
       },
     };
   })();
 
-  // ─── tab switching: only the active scene runs ────────────────────────────
-  // ══════════════════════════════════════════════════════════════════════════
-  // SCENE 05 · SPLIT SCOPE (multi-field, scissor panes, GPU picking)
-  // ══════════════════════════════════════════════════════════════════════════
+  // --- tab switching: only the active scene runs ----------------------------
+  // ==========================================================================
+  // SCENE 05 - SPLIT SCOPE (multi-field, scissor panes, GPU picking)
+  // ==========================================================================
   const split = (() => {
     const $canvas = $("split-canvas"), $nogl = $("split-nogl");
     const $hit = $("split-hit"), $pane = $("split-pane"), $idx = $("split-idx");
@@ -1872,7 +1889,7 @@
       lineFld.flush(lineSink);        // pane A: Lorenz ribbon  (LINE)
       ptFld.flush(ptSink);            // pane B: attractor      (POINT)
 
-      // ── GPU pick: one ID pass, one pixel read. Never every frame -- only on a move.
+      // -- GPU pick: one ID pass, one pixel read. Never every frame -- only on a move.
       if (pickPending) {
         pickPending = false;
         const inLine = (hoverX >= paneX(true) && hoverX < paneX(true) + paneW);
@@ -1938,7 +1955,7 @@
       canvasTop = r.top;
       for (const s of [starSink, ptSink, lineSink, markSink]) s.resize(W, H);
       layout();
-      $panes.textContent = "1 canvas · 1 context · 4 fields · 3 programs";
+      $panes.textContent = "1 canvas \u00B7 1 context \u00B7 4 fields \u00B7 3 programs";
     }
 
     return {
@@ -1959,12 +1976,16 @@
       destroy() {
         this.stop();
         ac.abort();   // release this scene's pointer/input listeners
+        starSink.dispose();   // this scene owns four sinks -- free all of them
+        ptSink.dispose();
+        lineSink.dispose();
+        markSink.dispose();
       },
     };
   })();
 
-  // ─── tabs ────────────────────────────────────────────────────────────────
-  // ── Scene 06 · Deep Time ───────────────────────────────────────────────────
+  // --- tabs ----------------------------------------------------------------
+  // -- Scene 06 - Deep Time ---------------------------------------------------
   // Same 400k timestamps, two pipelines, side by side in one context via scissor.
   //
   //   LEFT   LAYOUT.POINT. World coords forced through a single float32 (exactly what
@@ -1992,7 +2013,7 @@
     gl.blendFunc(gl.SRC_ALPHA, gl.ONE);
 
     const N = 400_000;
-    const T0 = 1.78e12;              // a real epoch-ms magnitude — this is the whole point
+    const T0 = 1.78e12;              // a real epoch-ms magnitude -- this is the whole point
     const DT_MS = 1000;              // one-second ticks
 
     // Source data in float64. Never rounded until it reaches a pipeline.
@@ -2098,24 +2119,23 @@
       }
 
       frames++;
-      if (now - hudAt >= 100) {                   // HUD at 10Hz — no toFixed in the hot loop
+      if (now - hudAt >= 100) {                   // HUD at 10Hz -- no toFixed in the hot loop
         const ulp = f32Ulp(camT);
-        $ulp.textContent = ulp >= 1000 ? (ulp / 1000).toFixed(1) + " s" : ulp.toFixed(0) + " ms";
-        $mspx.textContent = msPerPx >= 1000 ? (msPerPx / 1000).toFixed(2) + " s" : msPerPx.toFixed(0) + " ms";
+        hudText($ulp, ulp >= 1000 ? (ulp / 1000).toFixed(1) + " s" : ulp.toFixed(0) + " ms");
+        hudText($mspx, msPerPx >= 1000 ? (msPerPx / 1000).toFixed(2) + " s" : msPerPx.toFixed(0) + " ms");
 
         const dead = needsHiPrecision(camT, msPerPx);
-        $verdict.textContent = dead ? "BROKEN" : "ok";
-        $verdict.className = dead ? "v magenta" : "v green";
+        hudTextClass($verdict, dead ? "BROKEN" : "ok", dead ? "v magenta" : "v green");
 
         const spanMs = W * 0.5 * msPerPx;
-        $span.textContent = "viewport spans " + fmtSpan(spanMs) + " · " + N.toLocaleString() + " points";
+        hudText($span, "viewport spans " + fmtSpan(spanMs) + " \u00B7 " + N.toLocaleString() + " points");
 
-        $upCpu.textContent = cpuUploads.toLocaleString();
-        $upGpu.textContent = "1";
-        $cpuMs.textContent = cpuMs.toFixed(1) + " ms";
-        $mb.textContent = (cpuBytes / 1048576).toFixed(0);
-        $hit.textContent = lastHit < 0 ? "—" : "#" + lastHit;
-        $fps.textContent = String(Math.round((frames * 1000) / (now - hudAt)));
+        hudLocale($upCpu, cpuUploads);
+        hudText($upGpu, "1");
+        hudFixed($cpuMs, cpuMs, 1, " ms");
+        hudFixed($mb, cpuBytes / 1048576, 0, "");
+        hudText($hit, lastHit < 0 ? "\u2014" : "#" + lastHit);
+        hudNum($fps, Math.round((frames * 1000) / (now - hudAt)));
         frames = 0; hudAt = now;
       }
       last = now;

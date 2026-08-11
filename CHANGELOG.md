@@ -1,5 +1,26 @@
 # Changelog
 
+## [Unreleased]
+
+### Tests (not shipped)
+- **Real-GPU QUAD and LINE coverage.** `test/smoke.html` gains instanced QUAD and LINE
+  scenes with pixel readback (colour + coverage) and `pick()` decode assertions, plus a
+  POINT_HI context-loss/restore scene -- closing the gap where QUAD/LINE were validated
+  only against the mock GL. Drives through the existing `__SMOKE_RESULT__` harness, so
+  `npx playwright test test/smoke.spec.mjs` asserts them with no spec change.
+- **Core-branch backfill** in `test/GL_test.mjs`: `reset()`, the `setCount(n > capacity)`
+  grow branch, and the `swapRemove(last)` no-op.
+
+### Demo (not shipped)
+- **Demo hot-path law applied** to `demo/index.html` and `demo/demo.html`: per-scene sink
+  disposal on teardown (not just the deep scene), the deep-scene HUD routed through the
+  `_v`-deduped 10Hz helpers, all frame-loop forced-reflow / per-frame-allocation sites
+  removed, source ASCII-cleaned, and the dangling `verify/demo_logic.mjs` reference resolved.
+
+### Browser-validation checklist
+- POINT, POINT_HI, QUAD, LINE render + pick verified on real WebGL2 (SwiftShader, headless
+  Chromium) via `test/smoke.spec.mjs`; POINT and POINT_HI context-loss recovery verified.
+
 ## [1.4.1] - 2026-08-10
 
 ### Fixed

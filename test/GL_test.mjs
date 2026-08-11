@@ -108,6 +108,49 @@ test("swapRemove moves the last instance into the hole", () => {
     assert.equal(f.data[0], 30, "last (30) moved into slot 0");
 });
 
+test("reset() clears both count and the dirty range (GL-11)", () => {
+    const f = createField({ capacity: 8, stride: LAYOUT.POINT });
+    for (let i = 0; i < 5; i++) f.push(wPoint(i, i, 1, 1, 1, 1, 1));
+    assert.equal(f.count, 5);
+    assert.ok(f.dirtyLo() >= 0, "pushes left a dirty range");
+    f.reset();
+    assert.equal(f.count, 0, "reset zeroes the count");
+    assert.equal(f.dirtyLo(), -1, "reset clears dirty low");
+    assert.equal(f.dirtyHi(), -1, "reset clears dirty high");
+    // A clean reset field draws nothing and uploads nothing until refilled.
+    const sink = mockSink();
+    f.flush(sink);
+    assert.equal(sink.uploads, 0, "no upload after reset");
+    assert.equal(sink.lastCount, 0, "draws zero instances after reset");
+});
+
+test("setCount(n > capacity) grows to the next pow2 and marks [0, n-1] dirty (GL-11, GL.js grow-branch)", () => {
+    const f = createField({ capacity: 4, stride: LAYOUT.POINT });
+    assert.equal(f.capacity, 4);
+    f.clearDirty();
+    f.setCount(5);                                  // 5 > capacity 4 -> grow to 8
+    assert.equal(f.capacity, 8, "grew to the next power of two");
+    assert.equal(f.count, 5, "count is the requested n");
+    assert.equal(f.dirtyLo(), 0, "dirty range starts at 0");
+    assert.equal(f.dirtyHi(), 4, "dirty range covers [0, n-1]");
+    assert.equal(f.data.length, 8 * LAYOUT.POINT, "backing buffer resized to new capacity");
+});
+
+test("swapRemove(count-1) is a no-op that marks nothing dirty (GL-11, GL.js i===last branch)", () => {
+    const f = createField({ capacity: 8, stride: LAYOUT.POINT });
+    f.push(wPoint(10, 0, 1, 1, 1, 1, 1));   // 0
+    f.push(wPoint(20, 0, 1, 1, 1, 1, 1));   // 1
+    f.push(wPoint(30, 0, 1, 1, 1, 1, 1));   // 2
+    f.clearDirty();
+    assert.equal(f.dirtyLo(), -1, "clean before the removal");
+    f.swapRemove(2);                        // i === last -> no data move, no mark
+    assert.equal(f.count, 2, "count dropped by one");
+    assert.equal(f.dirtyLo(), -1, "removing the last element marks nothing dirty");
+    assert.equal(f.dirtyHi(), -1, "dirty high stays clean too");
+    assert.equal(f.data[0], 10, "slot 0 untouched");
+    assert.equal(f.data[LAYOUT.POINT], 20, "slot 1 untouched");
+});
+
 test("reactive driver re-projects on signal change and flushes once per frame (dirty-gated)", () => {
     const camera = signal({ x: 0, scale: 1 });
     const xs = new Float32Array([0, 100, 200, 300]);   // 4 data points
