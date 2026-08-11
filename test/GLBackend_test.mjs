@@ -191,6 +191,44 @@ test("draw sets the resolution uniform and issues one POINTS draw; count<=0 is a
     assert.equal(gl.count("drawArrays"), n, "no draw issued for count <= 0");
 });
 
+test("counters seam (v1.5.0): upload/draw record primitives; pick does not; null detaches; malformed throws", () => {
+    const gl = makeGL();
+    const counter = { fu: 0, dc: 0, recordUpload(n) { this.fu += n; }, recordDraw(n) { this.dc += n; } };
+    const sink = createPointSink(gl, { capacity: 1000, counters: counter });
+    const data = new Float32Array(8000);
+    sink.resize(800, 600);
+
+    sink.upload(data, 16, 8);        // +8 floats (the dirty-window count)
+    sink.draw(500);                  // +1 draw
+    assert.equal(counter.fu, 8, "recordUpload gets the dirty-window float count");
+    assert.equal(counter.dc, 1, "recordDraw fires once per non-empty draw");
+
+    sink.draw(0);                    // no GPU draw -> no count
+    assert.equal(counter.dc, 1, "draw(0) does not count");
+
+    // pick() must NOT touch the counters: its ID render bypasses draw()/upload().
+    const fu0 = counter.fu, dc0 = counter.dc;
+    for (let i = 0; i < 5; i++) sink.pick(10, 10, 500);
+    assert.equal(counter.fu, fu0, "pick() does not upload-count");
+    assert.equal(counter.dc, dc0, "pick() does not draw-count");
+
+    // setCounters(null) detaches -- no further counts.
+    sink.setCounters(null);
+    sink.upload(data, 0, 8);
+    sink.draw(10);
+    assert.equal(counter.fu, fu0, "detached: no further upload counts");
+    assert.equal(counter.dc, dc0, "detached: no further draw counts");
+
+    // re-attach records again.
+    sink.setCounters(counter);
+    sink.upload(data, 0, 16);
+    assert.equal(counter.fu, fu0 + 16, "re-attached records again");
+
+    // fail closed: a malformed handle throws (missing recordDraw, or at construction).
+    assert.throws(() => sink.setCounters({ recordUpload() {} }), /counters|recordDraw/);
+    assert.throws(() => createPointSink(gl, { capacity: 8, counters: { nope: 1 } }), /counters/);
+});
+
 test("resize updates the viewport and the resolution used by the next draw", () => {
     const gl = makeGL();
     const sink = createPointSink(gl, { capacity: 16 });

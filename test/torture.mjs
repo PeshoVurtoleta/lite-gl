@@ -737,10 +737,12 @@ async function tierT6() {
             errs.push(name + " frame netPerOp=" + net.toFixed(3) + " (perOp=" + r.perOp.toFixed(3) + ") major=" + r.major);
         }
 
-        // pick sub-gate (GL3): pick() must now allocate NOTHING. 100k isolated
-        // picks (>> the 10k floor) net against the same calibration; a real PASS
-        // folded into the gate, not a pending line.
-        const pick = await bytesPerOp(100000, () => { sink.pick(10, 10, N); });
+        // pick sub-gate (GL3): pick() must allocate NOTHING. Measured over the SAME
+        // ITERS as the calibration so the sampler's fixed per-op overhead cancels
+        // exactly in the net (a low iteration count leaves per-op sampler noise that
+        // can swing a borderline reading above the floor -- pickAt is byte-identical to
+        // v1.4.1, so any positive net here is measurement variance, not allocation).
+        const pick = await bytesPerOp(ITERS, () => { sink.pick(10, 10, N); });
         const pickNet = pick.perOp - calib.perOp;
         if (pickNet > worstPick) worstPick = pickNet;
         if (!(pick.source === "gc" && pick.supported && pick.observed && pick.major === 0 && pickNet < INSTRUMENT_FLOOR)) {
@@ -978,6 +980,158 @@ async function tierT9() {
 }
 
 // ===========================================================================
+// Tier T8 -- the counters seam (GL6). A mock lite-profiler-style counter
+// { recordUpload, recordDraw } fed a KNOWN op stream through the REAL sinks must
+// report floatsUploaded == the summed dirty-window floats and drawCalls == the
+// number of non-empty draws -- exactly. The seam must also introduce NO
+// allocation: the counted hot frame reads at/below the instrument floor (T6 stays
+// green WITH counters attached), and the same frame without counters still nets 0
+// (T6 green WITHOUT). Primitive numbers only; a bad handle throws (fail closed).
+// ===========================================================================
+function makeCounter() {
+    // Zero-allocation: recordUpload/recordDraw only do arithmetic. Primitive args.
+    return {
+        floatsUploaded: 0,
+        drawCalls: 0,
+        recordUpload(n) { this.floatsUploaded += n; },
+        recordDraw(n) { this.drawCalls += n; },
+    };
+}
+async function tierT8() {
+    const errs = [];
+    const check = (c, m) => { if (!c && errs.length < 12) errs.push(m); };
+
+    // --- conformance: exact counts over a deterministic op stream, per layout. ---
+    // Half the layouts attach via the { counters } construction option, half via
+    // sink.setCounters(handle), so both attachment paths are exercised.
+    const names = Object.keys(layouts);
+    for (let li = 0; li < names.length; li++) {
+        const name = names[li];
+        const L = layouts[name];
+        const stride = L.stride;
+        const cap = 512;
+        const gl = silentGL();
+        const counter = makeCounter();
+        // Two attach paths: option at construction (even) vs setCounters (odd).
+        let sink;
+        if ((li & 1) === 0) {
+            sink = L.make(gl, cap);
+            sink.setCounters(counter);
+        } else {
+            // build with the { counters } option (POINT_HI needs its camera set).
+            sink = (name === "POINT_HI")
+                ? (() => { const s = createPointHiSink(gl, { capacity: cap, counters: counter }); s.setCamera(0, 0, 1, 1, 0, 0); return s; })()
+                : (name === "POINT") ? createPointSink(gl, { capacity: cap, counters: counter })
+                : (name === "QUAD") ? createQuadSink(gl, { capacity: cap, counters: counter })
+                : createLineSink(gl, { capacity: cap, counters: counter });
+        }
+
+        const f = createField({ capacity: cap, stride });
+        const write = L.write;
+        let expFloats = 0, expDraws = 0;
+
+        // deterministic PRNG so a failure reproduces.
+        let seed = 0x2f6e10b3 ^ (li * 0x9e3779b1);
+        const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 0x100000000; };
+
+        const doFlush = () => {
+            const dLo = f.dirtyLo(), dHi = f.dirtyHi(), cnt = f.count;
+            if (dLo >= 0) { const hi = dHi < cnt ? dHi : cnt - 1; if (hi >= dLo) expFloats += (hi - dLo + 1) * stride; }
+            if (cnt > 0) expDraws += 1;
+            f.flush(sink);
+        };
+
+        f.setCount(0);
+        for (let step = 0; step < 4000; step++) {
+            const r = rnd();
+            if (r < 0.4 && f.count < cap) { _proj[0] = step; _proj[1] = step * 0.5; f.push(write); }
+            else if (r < 0.6 && f.count > 0) { _proj[0] = step * 2; _proj[1] = step; f.set((rnd() * f.count) | 0, write); }
+            else if (r < 0.72 && f.count > 0) { f.swapRemove((rnd() * f.count) | 0); }
+            else if (r < 0.8) { const n = (rnd() * cap) | 0; f.setCount(n); }
+            else { doFlush(); }
+        }
+        doFlush();
+
+        check(counter.floatsUploaded === expFloats, name + " floatsUploaded=" + counter.floatsUploaded + " expected=" + expFloats);
+        check(counter.drawCalls === expDraws, name + " drawCalls=" + counter.drawCalls + " expected=" + expDraws);
+
+        // INVARIANT: a pick() is NOT a draw. Its internal ID-buffer render calls
+        // gl.drawArrays directly (never sink.draw/upload), so a batch of picks with a
+        // counter attached must leave floatsUploaded AND drawCalls unchanged.
+        const fuP = counter.floatsUploaded, dcP = counter.drawCalls;
+        const pc = f.count > 0 ? f.count : 1;
+        for (let p = 0; p < 200; p++) sink.pick(10, 10, pc);
+        check(counter.floatsUploaded === fuP && counter.drawCalls === dcP,
+            name + " pick() does NOT touch counters (upload=" + (counter.floatsUploaded - fuP) + " draw=" + (counter.drawCalls - dcP) + ", expected 0/0)");
+
+        // detach: setCounters(null) stops recording (no further counts).
+        sink.setCounters(null);
+        const fu = counter.floatsUploaded, dc = counter.drawCalls;
+        f.touchAll(); f.flush(sink);
+        check(counter.floatsUploaded === fu && counter.drawCalls === dc, name + " setCounters(null) detaches (no further counts)");
+
+        // fail closed: a malformed handle throws at attach time.
+        let threw = false;
+        try { sink.setCounters({ recordUpload() {} }); } catch (_e) { threw = true; }
+        check(threw, name + " setCounters(malformed handle) throws (fail closed)");
+
+        sink.dispose();
+    }
+
+    // --- alloc: the seam introduces no allocation. Measure a counted hot frame
+    // (project one instance + flush(upload+draw)) per layout WITH counters
+    // attached, and one WITHOUT, both must net below the floor with zero major GC. ---
+    const ITERS = 500000;
+    const CAP = 4096;
+    const N = 2000;
+    const calib = await bytesPerOp(ITERS, (i) => { _proj[0] = i; _proj[1] = i * 0.5; });
+    const netPasses = (r) =>
+        r.source === "gc" && r.supported && r.observed && r.major === 0 &&
+        (r.perOp - calib.perOp) < INSTRUMENT_FLOOR;
+    let worstAttached = 0, worstDetached = 0;
+
+    for (const name of Object.keys(layouts)) {
+        const L = layouts[name];
+        const counter = makeCounter();
+        const mask = 1023;
+
+        // WITH counters attached.
+        {
+            const gl = silentGL();
+            const sink = L.make(gl, CAP);
+            sink.setCounters(counter);
+            const f = createField({ capacity: CAP, stride: L.stride });
+            f.setCount(N);
+            const write = L.write;
+            const frame = (i) => { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); f.flush(sink); };
+            const r = await bytesPerOp(ITERS, frame);
+            const net = r.perOp - calib.perOp;
+            if (net > worstAttached) worstAttached = net;
+            if (!netPasses(r)) errs.push(name + " counted-frame netPerOp=" + net.toFixed(3) + " major=" + r.major);
+            sink.dispose();
+        }
+        // WITHOUT counters (default) -- must also stay 0 (baseline no-counters path).
+        {
+            const gl = silentGL();
+            const sink = L.make(gl, CAP);
+            const f = createField({ capacity: CAP, stride: L.stride });
+            f.setCount(N);
+            const write = L.write;
+            const frame = (i) => { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); f.flush(sink); };
+            const r = await bytesPerOp(ITERS, frame);
+            const net = r.perOp - calib.perOp;
+            if (net > worstDetached) worstDetached = net;
+            if (!netPasses(r)) errs.push(name + " no-counter-frame netPerOp=" + net.toFixed(3) + " major=" + r.major);
+            sink.dispose();
+        }
+    }
+
+    const detail = "conformance exact; alloc worstAttachedNet=" + (worstAttached < 0 ? 0 : worstAttached).toFixed(3)
+        + "B/op worstDetachedNet=" + (worstDetached < 0 ? 0 : worstDetached).toFixed(3) + "B/op";
+    record("T8 counters seam (conformance + zero-alloc with/without counters)", errs.length === 0, errs.length ? errs.join("; ") : detail);
+}
+
+// ===========================================================================
 // Run.
 // ===========================================================================
 tierT0();
@@ -988,6 +1142,7 @@ tierT4();
 tierT5();
 const worstFrame = await tierT6();
 const t7 = await tierT7();
+await tierT8();
 await tierT9();
 
 let failed = 0;

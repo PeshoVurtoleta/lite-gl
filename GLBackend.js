@@ -386,6 +386,63 @@ function createPicker(gl, primitive, extraUniforms) {
     };
 }
 
+// === COUNTERS SEAM (v1.5.0) ==================================================
+// An OPTIONAL, duck-typed draw/upload counters handle -- the shape @zakkster/
+// lite-profiler 1.2.0 exposes: { recordUpload(floatCount), recordDraw(drawCount) }.
+// lite-profiler stays a PEER/optional integration, never a runtime dependency
+// (package.json `dependencies` is empty). A sink records the dirty-window float
+// count on each upload and one draw per non-empty draw, passing PRIMITIVE NUMBERS
+// only -- no per-call object. When no handle is attached the hot path guards on a
+// single truthiness check and allocates nothing, so field.flush stays byte-identical
+// to v1.4.1. Validation is fail-closed and runs once, at attach time (cold path):
+// a non-null handle missing either method throws with a clear hint.
+function validateCounters(handle) {
+    if (handle === null || handle === undefined) return null;
+    if (typeof handle !== "object"
+        || typeof handle.recordUpload !== "function"
+        || typeof handle.recordDraw !== "function") {
+        throw new TypeError(
+            "lite-gl: `counters` must be a handle with recordUpload(n) and recordDraw(n) "
+            + "methods (a lite-profiler-compatible counters object), or null to detach."
+        );
+    }
+    return handle;
+}
+
+// Per-sink counter wiring, cached so a re-attach never rebuilds the wrappers. The
+// no-counters path is the ORIGINAL base upload/draw (byte-identical to v1.4.1): a
+// null handle installs the base methods, an attached handle installs thin counting
+// wrappers. So `counters === null` adds NO branch to the shared hot path -- the cost
+// lives only while a handle is attached, and only on the public upload()/draw(). A
+// pick()'s internal ID render calls gl.drawArrays directly (never sink.draw), so a
+// pick can never touch the counters.
+const _sinkCounters = new WeakMap();   // api -> { base*, count*, h }
+
+function installCounters(api, handle, isLost) {
+    const counters = validateCounters(handle);
+    let rec = _sinkCounters.get(api);
+    if (!rec) {
+        const baseUpload = api.upload;   // the byte-identical v1.4.1 method
+        const baseDraw = api.draw;
+        rec = {
+            baseUpload, baseDraw, h: counters,
+            countUpload(data, floatOffset, floatCount) {
+                baseUpload(data, floatOffset, floatCount);
+                if (!isLost()) rec.h.recordUpload(floatCount);   // only if actually uploaded
+            },
+            countDraw(count) {
+                baseDraw(count);
+                if (!isLost() && count > 0) rec.h.recordDraw(1); // one GPU draw per non-empty draw
+            },
+        };
+        _sinkCounters.set(api, rec);
+    }
+    rec.h = counters;
+    api.upload = counters ? rec.countUpload : rec.baseUpload;
+    api.draw = counters ? rec.countDraw : rec.baseDraw;
+    return counters;
+}
+
 /** Apply a top-left-origin scissor rect. GL's scissor origin is bottom-left. */
 function applyScissor(gl, sc, resH) {
     gl.enable(gl.SCISSOR_TEST);
@@ -483,6 +540,9 @@ export function createPointSink(gl, opts) {
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "point");
     const restoreCbs = [];
+    // Optional lite-profiler-style draw/upload counters (v1.5.0). Null unless attached;
+    // the hot path guards on a single truthiness check and allocates nothing.
+    let counters = validateCounters(opts.counters);
 
     function createResources() {
         program = use("point");
@@ -523,7 +583,7 @@ export function createPointSink(gl, opts) {
 
     createResources();
 
-    return {
+    const api = {
         gl,
         capacity,
         resize(w, h) {
@@ -571,6 +631,14 @@ export function createPointSink(gl, opts) {
             const n = (count === undefined) ? lastCount : count;
             return pickAt(gl, picker, use, vao, "point", resW, resH, n, x, y, scissor, undefined, clearRGBA);
         },
+        /**
+         * Attach (or detach with null) an optional lite-profiler-style counters handle
+         * { recordUpload(floatCount), recordDraw(drawCount) }. Zero runtime dep; the sink
+         * records the dirty-window float count per upload and one draw per non-empty draw.
+         * Zero-overhead when unset: swaps the counting wrappers in, so the no-counters
+         * upload/draw stay byte-identical to v1.4.1 -- no branch on the shared hot path.
+         */
+        setCounters(handle) { counters = installCounters(api, handle); },
         onContextRestored(cb) {
             restoreCbs.push(cb);
             return () => { const i = restoreCbs.indexOf(cb); if (i >= 0) restoreCbs.splice(i, 1); };
@@ -589,6 +657,9 @@ export function createPointSink(gl, opts) {
             heldKeys.clear();
         },
     };
+    const isLost = () => lost;
+    counters = installCounters(api, counters, isLost);
+    return api;
 }
 
 const POINT_HI_STRIDE = 10;
@@ -628,6 +699,8 @@ export function createPointHiSink(gl, opts) {
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "pointHi", ["u_cameraHi", "u_cameraLo", "u_scale", "u_origin"]);
     const restoreCbs = [];
+    // Optional lite-profiler-style draw/upload counters (v1.5.0). Null unless attached.
+    let counters = validateCounters(opts.counters);
 
     // Camera state. Split on the CPU in float64, uploaded as four float32s.
     // Origin defaults to the canvas centre; null means "recompute on resize".
@@ -696,7 +769,7 @@ export function createPointHiSink(gl, opts) {
         setCameraUniforms(extra.u_cameraHi, extra.u_cameraLo, extra.u_scale, extra.u_origin);
     };
 
-    return {
+    const api = {
         gl,
         capacity,
 
@@ -774,6 +847,11 @@ export function createPointHiSink(gl, opts) {
             return pickAt(gl, picker, use, vao, "pointHi", resW, resH, n, x, y, scissor, applyPickCamera, clearRGBA);
         },
 
+        /** Attach (or detach with null) an optional lite-profiler-style counters handle
+         *  { recordUpload(floatCount), recordDraw(drawCount) }. Zero runtime dep; the
+         *  no-counters upload/draw stay byte-identical to v1.4.1 (swap, not a branch). */
+        setCounters(handle) { counters = installCounters(api, handle); },
+
         onContextRestored(cb) {
             restoreCbs.push(cb);
             return () => { const i = restoreCbs.indexOf(cb); if (i >= 0) restoreCbs.splice(i, 1); };
@@ -791,6 +869,9 @@ export function createPointHiSink(gl, opts) {
             heldKeys.clear();
         },
     };
+    const isLost = () => lost;
+    counters = installCounters(api, counters, isLost);
+    return api;
 }
 
 const QUAD_STRIDE = 9;
@@ -829,6 +910,8 @@ export function createQuadSink(gl, opts) {
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "quad");
     const restoreCbs = [];
+    // Optional lite-profiler-style draw/upload counters (v1.5.0). Null unless attached.
+    let counters = validateCounters(opts.counters);
 
     function createResources() {
         program = use("quad");
@@ -895,7 +978,7 @@ export function createQuadSink(gl, opts) {
 
     createResources();
 
-    return {
+    const api = {
         gl,
         capacity,
         /** Match the viewport (call on canvas resize). */
@@ -942,6 +1025,10 @@ export function createQuadSink(gl, opts) {
             const n = (count === undefined) ? lastCount : count;
             return pickAt(gl, picker, use, vao, "quad", resW, resH, n, x, y, scissor, undefined, clearRGBA);
         },
+        /** Attach (or detach with null) an optional lite-profiler-style counters handle
+         *  { recordUpload(floatCount), recordDraw(drawCount) }. Zero runtime dep; the
+         *  no-counters upload/draw stay byte-identical to v1.4.1 (swap, not a branch). */
+        setCounters(handle) { counters = installCounters(api, handle); },
         onContextRestored(cb) {
             restoreCbs.push(cb);
             return () => { const i = restoreCbs.indexOf(cb); if (i >= 0) restoreCbs.splice(i, 1); };
@@ -961,6 +1048,9 @@ export function createQuadSink(gl, opts) {
             heldKeys.clear();
         },
     };
+    const isLost = () => lost;
+    counters = installCounters(api, counters, isLost);
+    return api;
 }
 
 const LINE_STRIDE = 9;
@@ -1003,6 +1093,8 @@ export function createLineSink(gl, opts) {
     const use = (key) => { heldKeys.add(key); return acquireProgram(gl, key); };
     const picker = createPicker(gl, "line");
     const restoreCbs = [];
+    // Optional lite-profiler-style draw/upload counters (v1.5.0). Null unless attached.
+    let counters = validateCounters(opts.counters);
 
     function createResources() {
         program = use("line");
@@ -1069,7 +1161,7 @@ export function createLineSink(gl, opts) {
 
     createResources();
 
-    return {
+    const api = {
         gl,
         capacity,
         /** Match the viewport (call on canvas resize). */
@@ -1116,6 +1208,10 @@ export function createLineSink(gl, opts) {
             const n = (count === undefined) ? lastCount : count;
             return pickAt(gl, picker, use, vao, "line", resW, resH, n, x, y, scissor, undefined, clearRGBA);
         },
+        /** Attach (or detach with null) an optional lite-profiler-style counters handle
+         *  { recordUpload(floatCount), recordDraw(drawCount) }. Zero runtime dep; the
+         *  no-counters upload/draw stay byte-identical to v1.4.1 (swap, not a branch). */
+        setCounters(handle) { counters = installCounters(api, handle); },
         onContextRestored(cb) {
             restoreCbs.push(cb);
             return () => { const i = restoreCbs.indexOf(cb); if (i >= 0) restoreCbs.splice(i, 1); };
@@ -1135,4 +1231,7 @@ export function createLineSink(gl, opts) {
             heldKeys.clear();
         },
     };
+    const isLost = () => lost;
+    counters = installCounters(api, counters, isLost);
+    return api;
 }

@@ -135,6 +135,30 @@ is the whole point of this package.
 - **Charts:** this is the renderer [`lite-charts`](https://www.npmjs.com/package/@zakkster/lite-charts)
   reaches for past the Canvas2D ceiling (tens of thousands) into the hundreds of
   thousands / millions.
+- **Profiler counters (v1.5, optional, zero-dep):** every sink takes an optional
+  `counters` handle -- the duck-typed `{ recordUpload(floatCount), recordDraw(drawCount) }`
+  shape [`lite-profiler`](https://www.npmjs.com/package/@zakkster/lite-profiler) 1.2.0
+  exposes -- and emits its per-frame draw/upload metrics into it. It stays a **peer /
+  optional** integration: `dependencies` is empty, nothing is imported at runtime, and
+  when no handle is attached the hot path is byte-identical to before (a method swap, not
+  a per-frame branch -- the zero-GC gate is `0 B/op` with or without it). A `pick()` never
+  counts (its internal ID render bypasses `draw`/`upload`).
+
+  ```js
+  import { createProfiler } from "@zakkster/lite-profiler";   // peer, optional
+  const prof = createProfiler();
+
+  const points = createPointSink(gl, { capacity: 1_000_000, counters: prof.counters });
+  // or attach/detach later:
+  points.setCounters(prof.counters);   // start recording
+  points.setCounters(null);            // stop
+
+  // each flushed frame now feeds prof.counters:
+  //   recordUpload(floatCount)  -- the dirty-window float count actually uploaded
+  //   recordDraw(1)             -- one GPU draw per non-empty draw
+  // pick() is NOT counted (offscreen ID-buffer render); a context-loss re-seed IS
+  // counted -- it re-uploads the full range to the visible pipeline.
+  ```
 
 ---
 
@@ -186,9 +210,9 @@ interface Sink {
 }
 
 // backend (@zakkster/lite-gl/backend, browser-only)
-createPointSink(gl: WebGL2RenderingContext, { capacity }): PointSink   // LAYOUT.POINT -> GL_POINTS
-createQuadSink(gl: WebGL2RenderingContext, { capacity }): QuadSink    // LAYOUT.QUAD  -> instanced TRIANGLE_STRIP
-createLineSink(gl: WebGL2RenderingContext, { capacity }): LineSink    // LAYOUT.LINE  -> instanced TRIANGLE_STRIP (thick segments)
+createPointSink(gl: WebGL2RenderingContext, { capacity, counters? }): PointSink   // LAYOUT.POINT -> GL_POINTS
+createQuadSink(gl: WebGL2RenderingContext, { capacity, counters? }): QuadSink    // LAYOUT.QUAD  -> instanced TRIANGLE_STRIP
+createLineSink(gl: WebGL2RenderingContext, { capacity, counters? }): LineSink    // LAYOUT.LINE  -> instanced TRIANGLE_STRIP (thick segments)
 PICK_MAX_ID                                                           // 0xFFFFFE
 
 // all three sinks expose the same surface:
@@ -196,6 +220,7 @@ PICK_MAX_ID                                                           // 0xFFFFF
 //   draw(count); resize(w, h); onContextRestored(cb); isContextLost(); capacity; dispose; gl
 //   setScissor(x, y, w, h); clearScissor()      // v1.3 -- pane clipping, top-left origin
 //   pick(x, y, count?) -> instance index | -1   // v1.3 -- GPU ID pass, no CPU hit-testing
+//   setCounters(handle | null)                  // v1.5 -- optional lite-profiler counters (see Composition)
 ```
 
 `QUAD` instances are `x, y, w, h, rot, r, g, b, a` (`LAYOUT.QUAD`, stride 9); `LINE`
@@ -279,6 +304,29 @@ needsHiPrecision(1e6, 0.5);          // false — ordinary chart coords, use LAY
 **On cameras.** `setCamera()` takes six plain numbers, and that is deliberate — `lite-gl` does not depend on a camera package, and should not. [`@zakkster/lite-camera`](https://github.com/PeshoVurtoleta/lite-camera) is a *game-follow* camera for Canvas2D: deadzone, lookahead, trauma shake, clamped to a world rect, and it emits a `ctx` transform rather than numbers. It has **no zoom at all**, it pins `x ≥ 0`, and its `apply()` does `ctx.translate(-(pos[0] | 0), …)` — a ToInt32 truncation that *wraps* at epoch-ms magnitudes. Every one of those is correct for a platformer and wrong for a chart. Drive `setCamera()` from whatever owns your pan/zoom state; the numeric seam is the integration.
 
 **Use `POINT` for almost everything.** Reach for `POINT_HI` when the *world* coordinates are large — timestamps, geodetic coords, deep-zoom fractals — or when you pan a large field often enough that CPU re-projection is the bottleneck. `PointHiSink` carries the full v1.3 surface: scissor, `pick()`, shared program cache, context-loss recovery. The ID pass projects through the same camera as the visible pass, so hover stays honest at any zoom.
+
+## Testing
+
+```bash
+npm test           # node:test unit + call-sequence suites, then the dirty-range gate
+npm run test:gates # just the zero-tolerance dirty-range gate (headless, no GPU)
+npm run test:torture   # node --expose-gc: the tiered zero-GC / retention gate (T0..T9)
+npm run test:smoke     # Playwright real-GPU smoke (POINT/POINT_HI/QUAD/LINE)
+```
+
+- **`test/gates/dirty-range.mjs`** is a zero-tolerance build gate: a fixed op stream
+  (append, scatter-edit single instances, swap-remove) runs against a mock sink that sums
+  the uploaded float count, and the total is asserted against a **committed baseline
+  constant** at zero tolerance. A regression where a one-instance edit re-uploads the whole
+  buffer changes the total by thousands of floats and fails the build -- no GPU required.
+  The file carries a self-control that simulates that regression and confirms the gate goes
+  red. **To update the baseline** (a deliberate dirty-range contract change only): run the
+  gate, read the printed measured total, and set `BASELINE` to it in the *same commit* as
+  the change.
+- **`test/torture.mjs`** tier **T8** proves the v1.5 counters seam: a mock counter fed a
+  known op stream reports `floatsUploaded` equal to the summed dirty windows and `drawCalls`
+  equal to the number of draws, a `pick()` records nothing, and the seam adds zero
+  allocation with *or* without a counter attached.
 
 ## License
 

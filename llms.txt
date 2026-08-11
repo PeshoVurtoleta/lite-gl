@@ -91,6 +91,12 @@ Every sink also exposes:
     The sink owns the clear-colour write so pick() can restore it from a JS mirror instead of
     an allocating getParameter. Route your app's clear colour through this if you want a pick
     to leave it untouched; the default (0,0,0,0) matches the GL default.
+- setCounters(handle) / { counters } option  (v1.5.0)
+    Optional, zero-dependency draw/upload accounting. handle is duck-typed
+    { recordUpload(floatCount), recordDraw(drawCount) } -- the lite-profiler counters shape.
+    recordUpload gets the dirty-window float count after each upload; recordDraw(1) fires
+    after each non-empty draw. Primitive numbers only; when unset, a single truthiness guard,
+    zero allocation. setCounters(null) detaches; a malformed handle throws (fail closed).
 - pick(x, y, count?) -> instance index, or -1 for a miss
     Renders one ID pass into a lazily-created offscreen RGBA8 target (each instance flat-
     shaded with its index, 24-bit little-endian RGB) and reads back ONE pixel. The CPU does
@@ -148,6 +154,37 @@ blend disabled during the ID pass, framebuffer/clear-colour/blend restored, scis
 A frame re-projects in place and uploads only the dirty float window -- no
 allocation. Verified: 60 frames of full 1M-point re-projection with the backing
 Float32Array reference unchanged and the engine pool counters flat.
+
+## v1.5.0 -- the counters seam (lite-profiler) + the zero-tolerance dirty-range gate
+
+export const VERSION = "1.5.0" (package.json + GL.js + llms.txt kept in lockstep).
+
+COUNTERS SEAM (GL6). Every WebGL2 sink takes an OPTIONAL, zero-dependency counters
+handle -- duck-typed { recordUpload(floatCount), recordDraw(drawCount) }, exactly the
+shape @zakkster/lite-profiler 1.2.0 exposes -- and emits the two draw/upload metrics
+into it. lite-profiler stays a PEER/optional integration, never a runtime dependency
+(package.json dependencies is empty). Attach it two ways:
+
+  const sink = createPointSink(gl, { capacity, counters: prof.counters });  // at construction
+  sink.setCounters(prof.counters);   // or later; setCounters(null) detaches
+
+On each frame the sink calls counters.recordUpload(floatCount) after a bufferSubData
+(the dirty-window float count) and counters.recordDraw(1) after each non-empty draw.
+PRIMITIVE NUMBERS only -- no per-call object. When no counters are attached the guard is
+a single truthiness check and the path allocates nothing: the core hot functions
+(field.flush, writePointHi) are byte-identical to v1.4.1 (SHA parity holds), and the
+torture T6 zero-alloc gate is green both WITH and WITHOUT counters attached (0 B/op).
+A bad handle (non-null, missing recordUpload/recordDraw) throws at attach time (fail closed).
+
+DIRTY-RANGE GATE (GL7). test/gates/dirty-range.mjs is a headless, GPU-free build gate:
+a deterministic op stream (append N, scatter-edit K single instances each flushed,
+swap-remove M) runs against a mock sink that sums floatsUploaded, and the total is
+asserted against a COMMITTED baseline constant at ZERO tolerance. A regression where a
+one-instance edit re-uploads the whole buffer changes the total by thousands of floats
+and fails the build with no GPU required. The file carries a self-control that simulates
+that full-buffer regression and confirms the gate goes red. Run via `npm run test:gates`
+(also folded into `npm test`). To change the dirty-range contract deliberately, update
+the BASELINE constant in the file in the same commit.
 
 ## v1.4.1 -- shipped surface fixes + fail-closed hardening + zero-alloc pick + the torture gate
 

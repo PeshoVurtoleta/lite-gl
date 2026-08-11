@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-gl",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "description": "Signal-native instanced primitive renderer: project ~1M points/quads/lines from reactive inputs, upload only what changed, draw in one instanced call. Deep-zoom precision via a GPU camera with double-emulated world coordinates. Zero-GC core + a browser WebGL2 backend.",
   "type": "module",
   "main": "./GL.js",
@@ -32,7 +32,8 @@
     "LICENSE.txt"
   ],
   "scripts": {
-    "test": "node --test test/GL_test.mjs test/GLBackend_test.mjs test/packaging_test.mjs",
+    "test": "node --test test/GL_test.mjs test/GLBackend_test.mjs test/packaging_test.mjs && node test/gates/dirty-range.mjs",
+    "test:gates": "node test/gates/dirty-range.mjs",
     "pretest:torture": "npm install @zakkster/lite-signal@1.5.0-beta.7 --prefix node_modules/@zakkster/lite-leak --no-save --no-audit --no-fund --legacy-peer-deps",
     "test:torture": "node --expose-gc test/torture.mjs",
     "test:smoke": "playwright test test/smoke.spec.mjs"

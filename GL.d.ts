@@ -4,7 +4,7 @@
  */
 
 /** Package version. Kept in sync with package.json and llms.txt. */
-export const VERSION: "1.4.1";
+export const VERSION: "1.5.0";
 
 /** Fills `stride` floats of `data` starting at `base`. Must not allocate (hot path). */
 export type WriteFn = (data: Float32Array, base: number) => void;

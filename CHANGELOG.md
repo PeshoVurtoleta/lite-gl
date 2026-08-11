@@ -1,6 +1,28 @@
 # Changelog
 
-## [Unreleased]
+## [1.5.0] - 2026-08-11
+
+### Added
+- **Profiler counters seam (optional, zero-dep).** Every WebGL2 sink now takes an optional
+  duck-typed `counters` handle -- `{ recordUpload(floatCount), recordDraw(drawCount) }`, the
+  shape `@zakkster/lite-profiler` 1.2.0 exposes -- via a `counters` construction option or
+  `sink.setCounters(handle)` / `sink.setCounters(null)` to detach. On each flushed frame it
+  emits `recordUpload(floatCount)` (the dirty-window floats actually uploaded) and
+  `recordDraw(1)` per non-empty draw. A `pick()` never counts as a draw or upload (its
+  internal ID-buffer render is excluded); a context-loss re-seed, by contrast, *does* count
+  -- it is a real full-range GPU upload + draw, so a profiler should see it. lite-profiler
+  stays a **peer / optional** integration
+  -- `dependencies` remains empty; when no handle is attached the hot path is byte-identical
+  to v1.4.1 and allocates nothing (proven by torture T8, with and without counters).
+- **`test/gates/dirty-range.mjs` -- a headless, GPU-free zero-tolerance gate.** A deterministic
+  op stream (append / scatter-edit / swap-remove) is replayed against a mock sink and the exact
+  uploaded-float total is asserted against a committed baseline; any drift (e.g. a one-instance
+  edit re-uploading the whole buffer) fails the build by even one float. Wired into `npm test`
+  and `npm run test:gates`. Update the baseline only on a deliberate dirty-range contract change.
+- **Torture tier T8** -- counter-seam conformance (exact `floatsUploaded` / `drawCalls` over a
+  known op stream, both attach paths, `setCounters(null)` detach, fail-closed on a malformed
+  handle, and the pick-does-not-count invariant) plus a zero-alloc check with counters attached
+  AND absent.
 
 ### Tests (not shipped)
 - **Real-GPU QUAD and LINE coverage.** `test/smoke.html` gains instanced QUAD and LINE

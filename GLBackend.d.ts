@@ -1,5 +1,25 @@
 import type { Sink } from "./GL.js";
 
+/**
+ * An optional, zero-dependency draw/upload accounting handle (v1.5.0) -- the shape
+ * `@zakkster/lite-profiler` 1.2.0 exposes as `counters`. lite-profiler stays a
+ * PEER/optional integration, never a runtime dependency. A sink calls
+ * `recordUpload(floatCount)` with the dirty-window float count after each upload and
+ * `recordDraw(1)` after each non-empty draw. Primitive numbers only; no per-call object.
+ */
+export interface Counters {
+    recordUpload(floatCount: number): void;
+    recordDraw(drawCount: number): void;
+}
+
+/** Sink construction options. `counters` is optional (v1.5.0). */
+export interface SinkOptions {
+    /** Max instances (sizes the VBO once). */
+    capacity: number;
+    /** Optional lite-profiler-style draw/upload counters handle. */
+    counters?: Counters | null;
+}
+
 /** Shared by every WebGL2 sink (v1.3). */
 export interface GLSink extends Sink {
     gl: WebGL2RenderingContext;
@@ -21,6 +41,14 @@ export interface GLSink extends Sink {
      * mirror is (0,0,0,0), the GL default.
      */
     setClearColor(r: number, g: number, b: number, a: number): void;
+    /**
+     * Attach an optional lite-profiler-style draw/upload counters handle (v1.5.0), or
+     * `null` to detach. When attached, the sink records the dirty-window float count on
+     * each upload and one draw per non-empty draw, passing primitive numbers only. When
+     * unset the hot path is a single truthiness guard and allocates nothing. A malformed
+     * non-null handle (missing `recordUpload`/`recordDraw`) throws (fail closed).
+     */
+    setCounters(handle: Counters | null): void;
     /**
      * Instance index under (x, y) -- device pixels, top-left origin -- or -1 for a miss.
      *
@@ -44,7 +72,7 @@ export interface GLSink extends Sink {
 /** A WebGL2 point-instance sink (browser-only). Renders LAYOUT.POINT fields as GL_POINTS. */
 export interface PointSink extends GLSink {}
 
-export function createPointSink(gl: WebGL2RenderingContext, opts: { capacity: number }): PointSink;
+export function createPointSink(gl: WebGL2RenderingContext, opts: SinkOptions): PointSink;
 
 /** A WebGL2 instanced-quad sink (v1.1, browser-only).
  * Renders LAYOUT.QUAD fields (x,y,w,h,rot,rgba) using instanced TRIANGLE_STRIP + vertexAttribDivisor.
@@ -52,7 +80,7 @@ export function createPointSink(gl: WebGL2RenderingContext, opts: { capacity: nu
  */
 export interface QuadSink extends GLSink {}
 
-export function createQuadSink(gl: WebGL2RenderingContext, opts: { capacity: number }): QuadSink;
+export function createQuadSink(gl: WebGL2RenderingContext, opts: SinkOptions): QuadSink;
 
 /** A WebGL2 instanced thick-line sink (v1.2, browser-only).
  * Renders LAYOUT.LINE fields (x0,y0,x1,y1,width,rgba) as butt-capped screen-space
@@ -61,7 +89,7 @@ export function createQuadSink(gl: WebGL2RenderingContext, opts: { capacity: num
  */
 export interface LineSink extends GLSink {}
 
-export function createLineSink(gl: WebGL2RenderingContext, opts: { capacity: number }): LineSink;
+export function createLineSink(gl: WebGL2RenderingContext, opts: SinkOptions): LineSink;
 
 /**
  * A WebGL2 world-space point sink with the camera on the GPU (v1.4, browser-only).
@@ -97,7 +125,7 @@ export interface PointHiSink extends GLSink {
     };
 }
 
-export function createPointHiSink(gl: WebGL2RenderingContext, opts: { capacity: number }): PointHiSink;
+export function createPointHiSink(gl: WebGL2RenderingContext, opts: SinkOptions): PointHiSink;
 
 /**
  * Largest pickable instance index (v1.3). IDs are encoded in 24 bits of RGB and
