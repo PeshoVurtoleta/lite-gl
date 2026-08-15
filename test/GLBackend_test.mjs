@@ -10,7 +10,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createPointSink, createQuadSink, createLineSink, createPointHiSink, PICK_MAX_ID } from "../GLBackend.js";
-import { createField, LAYOUT, writePointHi, hiOf, loOf } from "../GL.js";
+import { createField, LAYOUT, writePointHi, hiOf, loOf, PICK_PENDING } from "../GL.js";
 
 // Minimal WebGL2 mock: distinct numeric enums, fake objects for create*, a call log.
 // opts.compileOK / opts.linkOK drive the failure paths; opts.log is the info log.
@@ -658,6 +658,32 @@ test("pick() returns -1 for background, empty fields, and out-of-bounds coordina
     assert.equal(sink.pick(640, 10), -1, "past the right edge -> -1");
     assert.equal(sink.pick(10, 480), -1, "past the bottom edge -> -1");
     assert.equal(gl.count("readPixels"), reads, "no GL work for out-of-bounds picks");
+});
+
+test("B5: a synchronous WebGL2 pick() NEVER returns PICK_PENDING (-2) -- the deferred sentinel is exclusive to pickMode:'deferred' sinks", () => {
+    const gl = makeGL();
+    const sink = createPointSink(gl, { capacity: 1000 });
+    sink.resize(640, 480);
+    assert.equal(sink.caps.pickMode, "sync", "sanity: this sink advertises synchronous pick");
+
+    // Sweep every observable outcome (miss, valid hit, empty field, OOB, boundary count)
+    // and confirm none of them is ever -2 -- a sync sink resolves in the SAME call, so
+    // PICK_PENDING (an async-only state) must be structurally unreachable here.
+    const outcomes = [];
+    outcomes.push(sink.pick(10, 10));                       // nothing drawn -> miss
+    sink.draw(100);
+    gl.__pixel = [255, 255, 255, 255]; outcomes.push(sink.pick(10, 10));   // background
+    gl.__pixel = [0, 0, 0, 255]; outcomes.push(sink.pick(10, 10));         // id 0 (valid, not a miss)
+    gl.__pixel = [7, 0, 0, 255]; outcomes.push(sink.pick(10, 10));         // id 7
+    outcomes.push(sink.pick(-1, 10));                       // OOB negative
+    outcomes.push(sink.pick(640, 10));                      // OOB right edge
+    sink.draw(0);
+    outcomes.push(sink.pick(10, 10));                       // empty field (count=0)
+    outcomes.push(sink.pick(10, 10, 0));                    // count<=0 explicit
+    outcomes.push(sink.pick(10, 10, PICK_MAX_ID + 1));      // boundary count
+
+    assert.ok(outcomes.every((v) => v !== PICK_PENDING), "no outcome of a sync pick() is ever -2: " + JSON.stringify(outcomes));
+    assert.ok(outcomes.every((v) => v === -1 || v >= 0), "every outcome is a resolved id (>=0) or a miss (-1), never a deferred sentinel");
 });
 
 test("pick() must not disturb the visible frame: blend off during the ID pass, all state restored", () => {

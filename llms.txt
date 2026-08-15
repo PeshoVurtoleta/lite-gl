@@ -155,9 +155,50 @@ A frame re-projects in place and uploads only the dirty float window -- no
 allocation. Verified: 60 frames of full 1M-point re-projection with the backing
 Float32Array reference unchanged and the engine pool counters flat.
 
+## v2.0.0-beta.0 -- the WebGPU sink (mock-proven)
+
+export const VERSION = "2.0.0-beta.0" (package.json + GL.js + llms.txt kept in lockstep).
+
+WEBGPU BACKEND (subpath "@zakkster/lite-gl/webgpu", GLWebGPU.js). A SECOND GPU sink that
+mirrors the WebGL2 sink interface exactly (upload/draw + resize/setScissor/clearScissor/
+setClearColor/setCounters/onContextRestored/isContextLost/dispose/pick) and drives the same
+GL.js core unchanged. The field byte layout is BYTE-IDENTICAL to WebGL2 (POINT 8, QUAD 9,
+LINE 9, POINT_HI 10); only the rendering MECHANISM differs -- WebGPU has no gl_PointSize, so
+POINT/POINT_HI are instanced unit-quads expanded by a_size in the vertex shader (the pick
+pass widens the same way). WGSL lives inline. This beta is MOCK-PROVEN headlessly (an injected
+mock GPUDevice + a precision-parity suite + torture WebGPU tiers); real-GPU Playwright is GL8c.
+
+  await createGPUTarget(canvas, { device? , format? , alphaMode? , reacquire? }) -> target
+    Acquires navigator.gpu.requestAdapter()/requestDevice() (or takes an injected { device })
+    and configures the context. FAILS CLOSED: absent navigator.gpu, a null adapter, or a
+    rejected device all THROW -- never a null/degraded sink. Owns device.lost + restore().
+  createGPUPointSink / createGPUPointHiSink / createGPUQuadSink / createGPULineSink(target,
+    { capacity, counters? }) -> sink   // same four primitives as WebGL2.
+
+CAPS. caps = { api:"webgpu", instancing:true, baseVertex:true, maxInstances:0xFFFFFF (=
+PICK_MAX_ID+1, identical to WebGL2), precisionHi:<per-sink>, pickMode:"deferred", version:1 }.
+Same key set/order as the WebGL2 caps; precisionHi true ONLY on createGPUPointHiSink.
+
+DEFERRED PICK (the second v2.0.0 break, on pickMode:"deferred" sinks only). WebGPU has no
+synchronous readPixels, so pick(x,y,count) renders a 24-bit-id pass (rgba8unorm, EXACT
+r|g<<8|b<<16 decode + 0xFFFFFF miss sentinel, so PICK_MAX_ID stays meaningful and identical
+on both backends), copies one texel into a pooled readback buffer (ring depth K=2), and
+returns PICK_PENDING (-2) until the async mapAsync resolves; a later identical pick() returns
+the decoded index (>=0) or -1 (miss). Both ring slots in flight -> PICK_PENDING back-pressure,
+no unbounded queue, zero per-call steady-state allocation. A "sync" WebGL2 sink NEVER returns
+PICK_PENDING. PICK_PENDING is exported from GL.js and re-exported from GLWebGPU.js.
+
+ZERO-GC. The WebGPU sink adds ZERO per-frame JS allocation (every render-pass descriptor and
+the submit array are preallocated and mutated in place); all per-frame cost is at the device
+boundary (createCommandEncoder/beginRenderPass/submit), gated deterministically by
+test/gates/webgpu-frame-alloc.mjs at 192 B/frame (a property of the mock, zero tolerance). The
+core's project/flush contribution nets < 1.0 B/op on BOTH sinks (torture T6/T6(gpu)). Precision:
+the POINT_HI camera port is BIT-EXACT WGSL-vs-GLSL over the Fork B' vectors (test/precision_
+parity_test.mjs).
+
 ## v2.0.0-alpha.0 -- the caps seam (the sole intended breaking surface)
 
-export const VERSION = "2.0.0-alpha.0" (package.json + GL.js + llms.txt kept in lockstep).
+export const VERSION = "2.0.0-alpha.0" was the prior alpha lockstep version (package.json + GL.js + llms.txt).
 
 CAPS SEAM (GL8a). Every sink now advertises a FROZEN caps descriptor:
 

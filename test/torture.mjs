@@ -76,6 +76,14 @@ import {
     createQuadSink,
     createLineSink,
 } from "../GLBackend.js";
+import {
+    createGPUTarget,
+    createGPUPointSink,
+    createGPUPointHiSink,
+    createGPUQuadSink,
+    createGPULineSink,
+} from "../GLWebGPU.js";
+import { mockWebGPU, WEBGPU_FRAME_BASELINE } from "./mockWebGPU.mjs";
 
 // ===========================================================================
 // Instrumentation guard -- a gate that cannot observe is a FAIL, not a pass.
@@ -267,6 +275,44 @@ const layouts = {
             data[base] = _proj[0]; data[base + 1] = _proj[1]; data[base + 2] = _proj[0] + 1; data[base + 3] = _proj[1] + 1; data[base + 4] = 2;
             data[base + 5] = 1; data[base + 6] = 1; data[base + 7] = 1; data[base + 8] = 1;
         },
+    },
+};
+
+// ===========================================================================
+// WebGPU sink harness. The mock (test/mockWebGPU.mjs) is the SAME one the frame-alloc
+// gate and GLWebGPU_test.mjs use. Two modes: non-faithful (device methods return reused
+// singletons -> zero-alloc device boundary, so a heap-sampled frame measures ONLY the
+// sink+core JS allocation) and faithful (fabricates per-frame objects with nominal byte
+// accounting -> the deterministic WEBGPU_FRAME_BASELINE). gpuLayouts mirrors `layouts`
+// and REUSES its projection writers (same _proj slots -- no new closure-boxed lets).
+// ===========================================================================
+async function makeGpuTarget(faithful) {
+    const m = mockWebGPU({ faithful: !!faithful });
+    const target = await createGPUTarget(m.canvas, { device: m.device });
+    target.__mockDevice = m.device;
+    target.__rec = m.rec;
+    return target;
+}
+const gpuLayouts = {
+    POINT: {
+        stride: LAYOUT.POINT,
+        make: (t, cap) => createGPUPointSink(t, { capacity: cap }),
+        write: layouts.POINT.write,
+    },
+    POINT_HI: {
+        stride: LAYOUT.POINT_HI,
+        make: (t, cap) => { const s = createGPUPointHiSink(t, { capacity: cap }); s.setCamera(0, 0, 1, 1, 0, 0); return s; },
+        write: layouts.POINT_HI.write,
+    },
+    QUAD: {
+        stride: LAYOUT.QUAD,
+        make: (t, cap) => createGPUQuadSink(t, { capacity: cap }),
+        write: layouts.QUAD.write,
+    },
+    LINE: {
+        stride: LAYOUT.LINE,
+        make: (t, cap) => createGPULineSink(t, { capacity: cap }),
+        write: layouts.LINE.write,
     },
 };
 
@@ -761,6 +807,68 @@ async function tierT6() {
 }
 
 // ===========================================================================
+// Tier T6(gpu) -- the zero-alloc gate through the WebGPU sink. Two readings per
+// layout: (a) a NON-faithful heap sample of project+flush+draw must net below the
+// instrument floor (the WebGPU sink adds ZERO per-frame JS allocation -- every
+// per-frame descriptor is preallocated, all device-boundary cost is the mock's);
+// (b) the FAITHFUL integer accounting of one frame must equal the committed
+// WEBGPU_FRAME_BASELINE exactly. Same bytesPerOp/calib as T6; calib uses the SAME
+// iteration count so the sampler's fixed overhead cancels in the net (the calibration
+// trap). The WebGL2 T6 pass is unchanged and still nets < 1.0 B/op.
+// ===========================================================================
+async function tierT6gpu() {
+    const errs = [];
+    const ITERS = 1_000_000;
+    const CAP = 4096;
+    const N = 2000;
+    const calib = await bytesPerOp(ITERS, (i) => { _proj[0] = i; _proj[1] = i * 0.5; });
+    const netPasses = (r) =>
+        r.source === "gc" && r.supported && r.observed && r.major === 0 &&
+        (r.perOp - calib.perOp) < INSTRUMENT_FLOOR;
+    let worstNet = 0;
+
+    for (const name of Object.keys(gpuLayouts)) {
+        const L = gpuLayouts[name];
+        const write = L.write;
+        const mask = 1023;
+
+        // (a) NON-faithful heap sample: the sink+core add nothing per frame.
+        const target = await makeGpuTarget(false);
+        const sink = L.make(target, CAP);
+        const f = createField({ capacity: CAP, stride: L.stride });
+        f.setCount(N);
+        const frame = (i) => { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); f.flush(sink); };
+        const r = await bytesPerOp(ITERS, frame);
+        const net = r.perOp - calib.perOp;
+        if (net > worstNet) worstNet = net;
+        if (!netPasses(r)) errs.push(name + " gpu frame netPerOp=" + net.toFixed(3) + " (perOp=" + r.perOp.toFixed(3) + ") major=" + r.major);
+        sink.dispose();
+
+        // (b) FAITHFUL integer accounting: exactly the committed device baseline / frame.
+        const ftarget = await makeGpuTarget(true);
+        const fsink = L.make(ftarget, CAP);
+        const ff = createField({ capacity: CAP, stride: L.stride });
+        ff.setCount(N);
+        for (let i = 0; i < N; i++) { _proj[0] = i; _proj[1] = i * 0.5; ff.set(i, write); }
+        ff.flush(fsink);
+        ftarget.__mockDevice.__resetAlloc();
+        _proj[0] = 1; _proj[1] = 1; ff.set(3, write); ff.flush(fsink);
+        const bytes = ftarget.__mockDevice.__alloc;
+        if (bytes !== WEBGPU_FRAME_BASELINE) {
+            errs.push(name + " gpu faithful bytes/frame=" + bytes + " != committed baseline " + WEBGPU_FRAME_BASELINE);
+        }
+        fsink.dispose();
+    }
+
+    const ok = errs.length === 0;
+    const worstReport = worstNet < 0 ? 0 : worstNet;
+    const detail = "calib=" + calib.perOp.toFixed(3) + "B/op worstGpuFrameNet=" + worstReport.toFixed(3)
+        + "B/op faithfulBaseline=" + WEBGPU_FRAME_BASELINE + "B/frame (committed)";
+    record("T6(gpu) zero-alloc project+flush+draw through the WebGPU sink (POINT/POINT_HI/QUAD/LINE)", ok, detail + (ok ? "" : " | " + errs.join("; ")));
+    return worstReport;
+}
+
+// ===========================================================================
 // Tier T7 -- soak and conservation.
 //   (a) 1M-instance soak, 600 frames: no major GC, maxPause < 2ms, heap flat.
 //   (b) 200 create/dispose cycles: lite-leak tracker.size() returns to baseline.
@@ -938,6 +1046,147 @@ async function tierT7() {
         minor: s.gc.minor,
         maxMs: s.gc.maxMs,
     };
+}
+
+// ===========================================================================
+// Tier T7(gpu) -- WebGPU soak and conservation, mirroring T7.
+//   (a) 1M-instance soak, 600 frames on the NON-faithful sink: no major GC,
+//       maxPause < 2ms, heap flat (< 8 MiB growth).
+//   (b) 200 create/dispose cycles + the SAME two negative controls (retained /
+//       forgotten). The forgotten control uses a FRESH target per sink and drops
+//       both refs, so the sink is not pinned by the target's sink registry (the
+//       WebGPU analogue of the listener-orphan retention noted in T7) and the
+//       finalizer can fire -- proving the size/finalizer gate can still catch a leak.
+// ===========================================================================
+async function tierT7gpu() {
+    const errs = [];
+    const check = (c, m) => { if (!c) errs.push(m); };
+
+    // (a) 1M soak.
+    const CAP = 1 << 20;
+    const stride = LAYOUT.POINT;
+    const target = await makeGpuTarget(false);
+    const sink = createGPUPointSink(target, { capacity: CAP });
+    const f = createField({ capacity: CAP, stride });
+    f.setCount(1_000_000);
+    let _v = 0;
+    const w = (data, base) => { for (let k = 0; k < stride; k++) data[base + k] = _v + k; };
+    f.touchAll(); f.flush(sink);
+    globalThis.gc();
+
+    const gc = new GcProfiler(1024, { source: "gc" }).start();
+    let firstHeap = 0, lastHeap = 0;
+    for (let frame = 0; frame < 600; frame++) {
+        const start = (frame * 4096) % 900000;
+        _v = frame;
+        for (let i = 0; i < 4096; i++) f.set(start + i, w);
+        f.flush(sink);
+        const hu = process.memoryUsage().heapUsed;
+        gc.sampleHeap(performance.now(), hu);
+        if (frame === 0) firstHeap = hu;
+        lastHeap = hu;
+    }
+    await gc.settle();
+    const s = gc.summary();
+    gc.stop();
+    const rep = checkNoGc(s, { maxMajor: 0, maxPauseMs: 2 });
+    check(rep.ok, "gpu 1M soak: maxMajor=0 & maxPause<2ms (major=" + s.gc.major + " maxMs=" + s.gc.maxMs.toFixed(2) + ")");
+    const heapGrowth = (lastHeap - firstHeap) / (1024 * 1024);
+    check(heapGrowth < 8, "gpu 1M soak: heap trend flat (growth=" + heapGrowth.toFixed(2) + " MiB)");
+    sink.dispose();
+
+    // (b) create/dispose conservation + 2 negative controls (same pattern as T7).
+    const leaks = [];
+    const warns = [];
+    const tracker = createLeakTracker({
+        name: "gl-gpu-conservation",
+        onLeak: (r) => leaks.push(r.kind + ":" + String(r.tag)),
+        onWarning: (wn) => warns.push(wn.kind + ":" + wn.reason),
+    });
+    tracker.registerKernel(createOwnerCascadeOrphanKernel());
+    tracker.registerKernel(createObserverOrphanKernel());
+    tracker.registerKernel(createAsyncRetentionKernel());
+
+    const { reactiveField: rf } = createDriver({ effect: sEffect, onCleanup: sOnCleanup, dispose: sDispose });
+    const NOOP = () => {};
+    const baseline = tracker.size();
+    const settleFinalizers = async (passes) => {
+        for (let i = 0; i < passes; i++) { globalThis.gc(); await new Promise((r) => setTimeout(r, 10)); }
+    };
+    const flushRegisters = () => { let j = null; for (let i = 0; i < 4000; i++) j = { x: i }; return j; };
+
+    // POSITIVE: 200 proper create -> dispose -> untrack cycles on a shared target.
+    const churnTarget = await makeGpuTarget(false);
+    const churnProper = (cycles) => {
+        for (let c = 0; c < cycles; c++) {
+            const s2 = createGPUPointSink(churnTarget, { capacity: 1024 });
+            const fld = createField({ capacity: 1024, stride: LAYOUT.POINT });
+            fld.setCount(16);
+            const scopeDispose = createScope((d) => {
+                rf(fld, { manual: true, sink: s2, project: (ff) => { ff.touch(0); } });
+                return d;
+            });
+            const handle = tracker.track(s2, NOOP, "gpu-sink", { audit: true });
+            scopeDispose();
+            s2.dispose();            // unregisters from the target -> not pinned
+            tracker.untrack(handle);
+        }
+    };
+    churnProper(200);
+    flushRegisters();
+    await settleFinalizers(10);
+    const live = tracker.size();
+    const findings = tracker.audit();
+    check(live === baseline, "gpu conservation: size back to baseline after 200 proper create/dispose (" + live + " vs " + baseline + ")");
+    check(findings.length === 0, "gpu conservation: no orphan findings (" + findings.length + ")");
+
+    // NEGATIVE CONTROL 1 -- retained-without-untrack: size stays elevated by exactly N.
+    const RETAIN = 40;
+    const retained = [];
+    for (let c = 0; c < RETAIN; c++) {
+        const s2 = createGPUPointSink(churnTarget, { capacity: 256 });
+        const h = tracker.track(s2, NOOP, "gpu-leaked-retained", { audit: true });
+        retained.push({ s2, h });          // strong ref: cannot collect, never untracked
+    }
+    flushRegisters();
+    await settleFinalizers(6);
+    const leakedLive = tracker.size();
+    check(leakedLive >= baseline + RETAIN, "gpu negctrl1: retaining " + RETAIN + " sinks keeps size elevated (" + leakedLive + " >= " + (baseline + RETAIN) + ")");
+    for (const r of retained) { r.s2.dispose(); tracker.untrack(r.h); }
+    retained.length = 0;
+    flushRegisters();
+    await settleFinalizers(6);
+    const recovered = tracker.size();
+    check(recovered === baseline, "gpu negctrl1: untrack restores baseline (" + recovered + " vs " + baseline + ")");
+
+    // NEGATIVE CONTROL 2 -- forgotten teardown. A FRESH target per sink, both refs
+    // dropped: the sink<->target cycle has no external root, so it collects while still
+    // registered and the finalizer must fire.
+    const leaksBefore = leaks.length;
+    const FORGET = 40;
+    const forgottenTargets = [];
+    for (let c = 0; c < FORGET; c++) forgottenTargets.push(await makeGpuTarget(false));
+    const churnForgotten = (targets) => {
+        for (let c = 0; c < targets.length; c++) {
+            const s2 = createGPUPointSink(targets[c], { capacity: 256 });
+            tracker.track(s2, NOOP, "gpu-leaked-forgotten", { audit: true });
+            // no dispose, no untrack; ref dropped at loop end
+        }
+    };
+    churnForgotten(forgottenTargets);
+    forgottenTargets.length = 0;   // drop the only external root -> sink+target collectable
+    flushRegisters();
+    await settleFinalizers(12);
+    const forgottenLeaks = leaks.length - leaksBefore;
+    check(forgottenLeaks > 0, "gpu negctrl2: forgotten teardown raises a leak via onLeak (" + forgottenLeaks + " > 0)");
+
+    const detail = "gpu soak major=" + s.gc.major + " maxMs=" + s.gc.maxMs.toFixed(2) +
+        "; proper size=" + live + "/" + baseline + " findings=" + findings.length +
+        "; negctrl1 retained=" + leakedLive + " recovered=" + recovered +
+        "; negctrl2 forgottenLeaks=" + forgottenLeaks +
+        (warns.length ? " warnings=[" + warns.join(",") + "]" : "");
+    record("T7(gpu) soak + create/dispose conservation (+ 2 negative controls)", errs.length === 0, errs.length ? errs.join("; ") : detail);
+    return { major: s.gc.major, minor: s.gc.minor, maxMs: s.gc.maxMs };
 }
 
 // ===========================================================================
@@ -1188,6 +1437,174 @@ function tierT8b() {
 }
 
 // ===========================================================================
+// Tier T8(gpu) -- the counters seam through the WebGPU sinks. Full conformance
+// stream (exact floatsUploaded / drawCalls, both attach paths, detach, malformed,
+// pick-does-not-count) plus a zero-alloc pass with AND without counters against
+// gpuLayouts (non-faithful mock, net below the floor).
+// ===========================================================================
+async function tierT8gpu() {
+    const errs = [];
+    const check = (c, m) => { if (!c && errs.length < 12) errs.push(m); };
+    const names = Object.keys(gpuLayouts);
+
+    for (let li = 0; li < names.length; li++) {
+        const name = names[li];
+        const L = gpuLayouts[name];
+        const stride = L.stride;
+        const cap = 512;
+        const target = await makeGpuTarget(false);
+        const counter = makeCounter();
+        // Two attach paths: setCounters (even) vs the construction option (odd).
+        let sink;
+        if ((li & 1) === 0) {
+            sink = L.make(target, cap);
+            sink.setCounters(counter);
+        } else {
+            sink = (name === "POINT_HI")
+                ? (() => { const s = createGPUPointHiSink(target, { capacity: cap, counters: counter }); s.setCamera(0, 0, 1, 1, 0, 0); return s; })()
+                : (name === "POINT") ? createGPUPointSink(target, { capacity: cap, counters: counter })
+                : (name === "QUAD") ? createGPUQuadSink(target, { capacity: cap, counters: counter })
+                : createGPULineSink(target, { capacity: cap, counters: counter });
+        }
+
+        const f = createField({ capacity: cap, stride });
+        const write = L.write;
+        let expFloats = 0, expDraws = 0;
+        let seed = 0x2f6e10b3 ^ (li * 0x9e3779b1);
+        const rnd = () => { seed ^= seed << 13; seed ^= seed >>> 17; seed ^= seed << 5; return (seed >>> 0) / 0x100000000; };
+        const doFlush = () => {
+            const dLo = f.dirtyLo(), dHi = f.dirtyHi(), cnt = f.count;
+            if (dLo >= 0) { const hi = dHi < cnt ? dHi : cnt - 1; if (hi >= dLo) expFloats += (hi - dLo + 1) * stride; }
+            if (cnt > 0) expDraws += 1;
+            f.flush(sink);
+        };
+        f.setCount(0);
+        for (let step = 0; step < 4000; step++) {
+            const r = rnd();
+            if (r < 0.4 && f.count < cap) { _proj[0] = step; _proj[1] = step * 0.5; f.push(write); }
+            else if (r < 0.6 && f.count > 0) { _proj[0] = step * 2; _proj[1] = step; f.set((rnd() * f.count) | 0, write); }
+            else if (r < 0.72 && f.count > 0) { f.swapRemove((rnd() * f.count) | 0); }
+            else if (r < 0.8) { const n = (rnd() * cap) | 0; f.setCount(n); }
+            else { doFlush(); }
+        }
+        doFlush();
+
+        check(counter.floatsUploaded === expFloats, name + " gpu floatsUploaded=" + counter.floatsUploaded + " expected=" + expFloats);
+        check(counter.drawCalls === expDraws, name + " gpu drawCalls=" + counter.drawCalls + " expected=" + expDraws);
+
+        // pick is NOT a draw/upload (its internal id render never calls sink.draw/upload).
+        const fuP = counter.floatsUploaded, dcP = counter.drawCalls;
+        const pc = f.count > 0 ? f.count : 1;
+        for (let p = 0; p < 50; p++) sink.pick(10, 10, pc);
+        check(counter.floatsUploaded === fuP && counter.drawCalls === dcP, name + " gpu pick() does not touch counters");
+
+        sink.setCounters(null);
+        const fu = counter.floatsUploaded, dc = counter.drawCalls;
+        f.touchAll(); f.flush(sink);
+        check(counter.floatsUploaded === fu && counter.drawCalls === dc, name + " gpu setCounters(null) detaches");
+
+        let threw = false;
+        try { sink.setCounters({ recordUpload() {} }); } catch (_e) { threw = true; }
+        check(threw, name + " gpu setCounters(malformed) throws (fail closed)");
+
+        sink.dispose();
+    }
+
+    // alloc: counted vs uncounted hot frame, non-faithful, net below the floor.
+    const ITERS = 500000;
+    const CAP = 4096;
+    const N = 2000;
+    const calib = await bytesPerOp(ITERS, (i) => { _proj[0] = i; _proj[1] = i * 0.5; });
+    const netPasses = (r) =>
+        r.source === "gc" && r.supported && r.observed && r.major === 0 &&
+        (r.perOp - calib.perOp) < INSTRUMENT_FLOOR;
+    let worstAttached = 0, worstDetached = 0;
+
+    for (const name of Object.keys(gpuLayouts)) {
+        const L = gpuLayouts[name];
+        const mask = 1023;
+        const write = L.write;
+        {
+            const target = await makeGpuTarget(false);
+            const counter = makeCounter();
+            const sink = L.make(target, CAP);
+            sink.setCounters(counter);
+            const f = createField({ capacity: CAP, stride: L.stride });
+            f.setCount(N);
+            const frame = (i) => { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); f.flush(sink); };
+            const r = await bytesPerOp(ITERS, frame);
+            const net = r.perOp - calib.perOp;
+            if (net > worstAttached) worstAttached = net;
+            if (!netPasses(r)) errs.push(name + " gpu counted-frame netPerOp=" + net.toFixed(3) + " major=" + r.major);
+            sink.dispose();
+        }
+        {
+            const target = await makeGpuTarget(false);
+            const sink = L.make(target, CAP);
+            const f = createField({ capacity: CAP, stride: L.stride });
+            f.setCount(N);
+            const frame = (i) => { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); f.flush(sink); };
+            const r = await bytesPerOp(ITERS, frame);
+            const net = r.perOp - calib.perOp;
+            if (net > worstDetached) worstDetached = net;
+            if (!netPasses(r)) errs.push(name + " gpu no-counter-frame netPerOp=" + net.toFixed(3) + " major=" + r.major);
+            sink.dispose();
+        }
+    }
+
+    const detail = "gpu conformance exact; alloc worstAttachedNet=" + (worstAttached < 0 ? 0 : worstAttached).toFixed(3)
+        + "B/op worstDetachedNet=" + (worstDetached < 0 ? 0 : worstDetached).toFixed(3) + "B/op";
+    record("T8(gpu) counters seam (conformance + zero-alloc with/without counters)", errs.length === 0, errs.length ? errs.join("; ") : detail);
+}
+
+// ===========================================================================
+// Tier T8b(gpu) -- the caps seam through the WebGPU sinks. Same Proxy-counted
+// bind-once / zero-per-frame proof as T8b, over gpuLayouts.
+// ===========================================================================
+async function tierT8bGpu() {
+    const errs = [];
+    const check = (c, m) => { if (!c && errs.length < 12) errs.push(m); };
+    const { reactiveField: rf } = createDriver({ effect: sEffect, onCleanup: sOnCleanup, dispose: sDispose });
+    const FRAMES = 1_000_000;
+    const details = [];
+
+    for (const name of Object.keys(gpuLayouts)) {
+        const L = gpuLayouts[name];
+        const target = await makeGpuTarget(false);
+        const sink = L.make(target, 4096);
+
+        let reads = 0;
+        const realCaps = sink.caps;
+        sink.caps = new Proxy(realCaps, { get(t, p, r) { reads++; return Reflect.get(t, p, r); } });
+
+        const f = createField({ capacity: 4096, stride: L.stride });
+        f.setCount(2000);
+        const write = L.write;
+        const mask = 1023;
+        let handle;
+        const scopeDispose = createScope((d) => {
+            handle = rf(f, { manual: true, sink, project: (fl) => { _proj[0] = 1; _proj[1] = 1; fl.set(0, write); } });
+            return d;
+        });
+        const readsAtBind = reads;
+        check(readsAtBind > 0, name + " gpu assertCaps read caps at bind (" + readsAtBind + " > 0)");
+
+        reads = 0;
+        for (let i = 0; i < FRAMES; i++) {
+            if ((i & 4095) === 0) { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); }
+            handle.frame();
+        }
+        check(reads === 0, name + " gpu per-frame caps reads over " + FRAMES + " frames == 0 (got " + reads + ")");
+        details.push(name + ":bind" + readsAtBind + "/frame" + reads);
+
+        scopeDispose();
+        sink.dispose();
+    }
+    record("T8b(gpu) caps seam: caps read once at bind, ZERO per frame (WebGPU sinks)",
+        errs.length === 0, errs.length ? errs.join("; ") : details.join(" "));
+}
+
+// ===========================================================================
 // Run.
 // ===========================================================================
 tierT0();
@@ -1197,9 +1614,13 @@ tierT3();
 tierT4();
 tierT5();
 const worstFrame = await tierT6();
+const worstGpuFrame = await tierT6gpu();
 const t7 = await tierT7();
+const t7gpu = await tierT7gpu();
 await tierT8();
+await tierT8gpu();
 tierT8b();
+await tierT8bGpu();
 await tierT9();
 
 let failed = 0;
@@ -1212,7 +1633,10 @@ console.log(
     "GATE leak=size " + t7.live + "/" + t7.baseline +
     " findings=" + t7.findings + " warnings=" + t7.warnings +
     " | gc major=" + t7.major + " minor=" + t7.minor + " maxMs=" + t7.maxMs.toFixed(2) +
-    " | alloc=" + worstFrame.toFixed(3) + " B/op | " + (failed === 0 ? "ok" : "FAIL")
+    " | alloc=" + worstFrame.toFixed(3) + " B/op" +
+    " | gpu gc major=" + t7gpu.major + " minor=" + t7gpu.minor + " maxMs=" + t7gpu.maxMs.toFixed(2) +
+    " gpu-alloc=" + worstGpuFrame.toFixed(3) + " B/op baseline=" + WEBGPU_FRAME_BASELINE + " B/frame" +
+    " | " + (failed === 0 ? "ok" : "FAIL")
 );
 
 if (failed !== 0) process.exit(1);

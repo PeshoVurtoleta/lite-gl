@@ -4,7 +4,7 @@
  */
 
 /** Package version. Kept in sync with package.json and llms.txt. */
-export const VERSION: "1.5.0";
+export const VERSION: "2.0.0-beta.0";
 
 /** Fills `stride` floats of `data` starting at `base`. Must not allocate (hot path). */
 export type WriteFn = (data: Float32Array, base: number) => void;
@@ -120,3 +120,17 @@ export function writePointHi(
     b: number,
     a: number,
 ): void;
+
+/**
+ * Largest pickable instance index (v2.0.0, promoted to the core). IDs are encoded in
+ * 24 bits of RGB and 0xFFFFFF is reserved as the "miss" value, so 0 .. 0xFFFFFE are
+ * pickable. Both backends re-export this exact value.
+ */
+export const PICK_MAX_ID: number;
+
+/**
+ * Deferred-pick sentinel (v2.0.0): a pick() return of -2 meaning the GPU readback has
+ * not resolved yet. Returned ONLY by a pickMode:"deferred" sink (WebGPU); a "sync" sink
+ * (WebGL2) never returns it. Poll pick() again to get the resolved index or -1 miss.
+ */
+export const PICK_PENDING: number;

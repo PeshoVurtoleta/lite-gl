@@ -1,5 +1,44 @@
 # Changelog
 
+## [2.0.0-beta.0] - 2026-08-15
+
+### Added
+- **The WebGPU sink (`@zakkster/lite-gl/webgpu`, GLWebGPU.js).** A second GPU backend that
+  mirrors the WebGL2 sink interface exactly and drives the unchanged GL.js core. Four sinks
+  (`createGPUPointSink` / `createGPUPointHiSink` / `createGPUQuadSink` / `createGPULineSink`)
+  plus `createGPUTarget(canvas, opts)`, which acquires a device (or takes an injected
+  `{ device }`) and configures the context. The field byte layout is byte-identical to WebGL2;
+  only the rendering mechanism differs (no `gl_PointSize` -> points are instanced unit-quads
+  expanded by `a_size` in inline WGSL). This beta is MOCK-PROVEN headlessly; real-GPU
+  Playwright validation is deferred to GL8c.
+- **`PICK_PENDING` (-2) and `PICK_MAX_ID` promoted to the core (GL.js).** Both backends
+  re-export `PICK_MAX_ID` verbatim so it reads bit-identically everywhere (asserted by
+  `test/packaging_test.mjs`).
+- **`test/gates/webgpu-frame-alloc.mjs`** -- a headless, GPU-free, zero-tolerance gate that
+  accounts the WebGPU sink's per-frame device-boundary allocation via integer accounting
+  (like `dirty-range.mjs`) and pins it to the committed **192 B/frame** (`WEBGPU_FRAME_BASELINE`
+  = encoder + render pass + submit). Also asserts the core's own per-frame contribution is 0
+  and that a self-control injecting one extra per-frame object trips the gate.
+- **`test/GLWebGPU_test.mjs`** (fail-closed acquisition, device loss + restore, the deferred-
+  pick state machine with K=2 back-pressure, `PICK_MAX_ID` RangeError, counters conformance,
+  caps shape/freeze) and **`test/precision_parity_test.mjs`** (Fork B': WGSL vs GLSL POINT_HI
+  projection is **bit-exact** over 13 vectors). Torture gains WebGPU tiers T6(gpu) / T7(gpu) /
+  T8(gpu) / T8b(gpu). The single-source-of-truth mock lives in `test/mockWebGPU.mjs`.
+
+### Changed (BREAKING -- two v2.0.0 breaks total)
+- **Caps surface** (carried from the alpha): every sink advertises a frozen `caps` descriptor.
+  The WebGPU sinks advertise `api:"webgpu"`, `baseVertex:true`, and `pickMode:"deferred"`.
+- **Deferred pick.** On a `pickMode:"deferred"` sink (WebGPU) `pick()` may return `PICK_PENDING`
+  (-2) while the async readback is unresolved -- poll again for the resolved index or -1 miss.
+  A `pickMode:"sync"` sink (WebGL2) never returns `PICK_PENDING`, so existing WebGL2 code is
+  unaffected.
+
+  **Migration:** treat a WebGPU `pick()` result of `PICK_PENDING` as "ask again next frame".
+
+### Internal
+- GLBackend.js now imports `PICK_MAX_ID` from GL.js and re-exports it (an alias line; no hashed
+  hot body -- `pickAt`/`upload`/`draw` -- changed, still fenced green by `test/hash_parity.mjs`).
+
 ## [2.0.0-alpha.0] - 2026-08-15
 
 ### Changed (BREAKING -- the sole intended break of v2.0.0)

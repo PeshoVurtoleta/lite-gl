@@ -29,7 +29,7 @@ import {
 import { frameDelta } from "@zakkster/lite-raf";
 
 /** Package version. Kept in sync with package.json and llms.txt (packaging law). */
-export const VERSION = "2.0.0-alpha.0";
+export const VERSION = "2.0.0-beta.0";
 
 /** Hard cap on a field's instance capacity: 2^30. Above this the power-of-two
  *  sizing (`p <<= 1`, a 32-bit shift) would wrap negative and `nextPow2` could
@@ -351,6 +351,26 @@ export const LAYOUT = {
     LINE: 9,       // x0, y0, x1, y1, width, r, g, b, a            -- screen px
     POINT_HI: 10,  // xHi, yHi, xLo, yLo, size, r, g, b, a, _pad   -- WORLD, double-emulated
 };
+
+/**
+ * Max pickable instance index: the 24-bit ID space minus the reserved "miss" value
+ * (0xFFFFFF). Both backends encode instance indices in 24 bits of RGB (r | g<<8 | b<<16),
+ * so valid indices are 0 .. 0xFFFFFE and the largest pickable count is PICK_MAX_ID + 1.
+ * Promoted to the core (v2.0.0) so the WebGL2 and WebGPU sinks read ONE identical value;
+ * each backend re-exports it verbatim (an alias line, so no hashed hot body is touched).
+ */
+export const PICK_MAX_ID = 0xFFFFFE;
+
+/**
+ * Deferred-pick sentinel (v2.0.0). A pick() result of:
+ *   - >= 0  is the instance index under the cursor,
+ *   - -1    is a confirmed miss (background),
+ *   - -2    is PICK_PENDING: the GPU readback has not resolved yet.
+ * PICK_PENDING is returned ONLY by a sink advertising pickMode:"deferred" (the WebGPU
+ * sink's async copyTextureToBuffer + mapAsync); a "sync" sink (WebGL2) never returns it.
+ * Poll pick() again on a later frame -- a subsequent identical request returns the id.
+ */
+export const PICK_PENDING = -2;
 
 // === v1.4.0: DEEP-ZOOM PRECISION ===========================================
 //

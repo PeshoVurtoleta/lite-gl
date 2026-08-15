@@ -30,6 +30,11 @@
  * MIT (c) 2026 Zahary Shinikchiev
  */
 
+// PICK_MAX_ID lives in the core (GL.js) as of v2.0.0 so the WebGL2 and WebGPU sinks
+// read ONE identical value. Imported (not redeclared) here and re-exported verbatim
+// below -- an alias line that touches no hashed hot body (pickAt/upload/draw).
+import { PICK_MAX_ID } from "./GL.js";
+
 const POINT_VS = `#version 300 es
 layout(location=0) in vec2 a_pos;     // screen pixels
 layout(location=1) in float a_size;   // diameter in pixels
@@ -279,8 +284,12 @@ void main() {
  * index at or past the reserved miss (0xFFFFFF), so it throws a RangeError rather than
  * returning a wrong (aliased) instance (fail closed, GL-07). The guard lives in the
  * on-demand pick path, never in the per-frame draw hot body.
+ *
+ * As of v2.0.0 the value itself is defined in GL.js and imported above; this line
+ * re-exports it unchanged so `import { PICK_MAX_ID } from "@zakkster/lite-gl/backend"`
+ * keeps working and reads bit-identically to the core and the WebGPU sink.
  */
-export const PICK_MAX_ID = 0xFFFFFE;
+export { PICK_MAX_ID };
 
 /**
  * Frozen sink capability descriptor (v2.0.0 -- the caps seam). The GL-agnostic core
