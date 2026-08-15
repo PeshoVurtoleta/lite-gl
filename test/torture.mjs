@@ -1132,6 +1132,62 @@ async function tierT8() {
 }
 
 // ===========================================================================
+// Tier T8b -- the caps seam (GL8a). The v2.0.0 break: every sink advertises a
+// FROZEN caps descriptor and reactiveField reads it EXACTLY ONCE, at bind, via
+// assertCaps -- NEVER per frame. Proof: wrap the sink's caps in a Proxy whose get
+// trap counts reads, bind via reactiveField, and run 1e6 frames. assertCaps must
+// read caps at bind (> 0), then the per-frame closure must read it ZERO times, for
+// all four layouts. (A frozen target forces the get trap to forward the real value,
+// per the Proxy non-configurable invariant -- so the trap only counts, never lies.)
+// ===========================================================================
+function tierT8b() {
+    const errs = [];
+    const check = (c, m) => { if (!c && errs.length < 12) errs.push(m); };
+    const { reactiveField: rf } = createDriver({ effect: sEffect, onCleanup: sOnCleanup, dispose: sDispose });
+    const FRAMES = 1_000_000;
+    const details = [];
+
+    for (const name of Object.keys(layouts)) {
+        const L = layouts[name];
+        const gl = silentGL();
+        const sink = L.make(gl, 4096);
+
+        // Count every property read of caps. The frozen target makes the get trap
+        // return the real value (Proxy invariant), so this only observes reads.
+        let reads = 0;
+        const realCaps = sink.caps;
+        sink.caps = new Proxy(realCaps, { get(t, p, r) { reads++; return Reflect.get(t, p, r); } });
+
+        const f = createField({ capacity: 4096, stride: L.stride });
+        f.setCount(2000);
+        const write = L.write;
+        const mask = 1023;
+        let handle;
+        const scopeDispose = createScope((d) => {
+            handle = rf(f, { manual: true, sink, project: (fl) => { _proj[0] = 1; _proj[1] = 1; fl.set(0, write); } });
+            return d;
+        });
+        const readsAtBind = reads;
+        check(readsAtBind > 0, name + " assertCaps read caps at bind (" + readsAtBind + " > 0)");
+
+        // 1e6 frames. The per-frame closure reads only field.dirtyLo()/field.flush(sink)
+        // -- never sink.caps.* -- so this counter must stay at exactly 0.
+        reads = 0;
+        for (let i = 0; i < FRAMES; i++) {
+            if ((i & 4095) === 0) { _proj[0] = i; _proj[1] = i * 0.5; f.set(i & mask, write); }
+            handle.frame();
+        }
+        check(reads === 0, name + " per-frame caps reads over " + FRAMES + " frames == 0 (got " + reads + ")");
+        details.push(name + ":bind" + readsAtBind + "/frame" + reads);
+
+        scopeDispose();
+        sink.dispose();
+    }
+    record("T8b caps seam: caps read once at bind, ZERO per frame (POINT/POINT_HI/QUAD/LINE)",
+        errs.length === 0, errs.length ? errs.join("; ") : details.join(" "));
+}
+
+// ===========================================================================
 // Run.
 // ===========================================================================
 tierT0();
@@ -1143,6 +1199,7 @@ tierT5();
 const worstFrame = await tierT6();
 const t7 = await tierT7();
 await tierT8();
+tierT8b();
 await tierT9();
 
 let failed = 0;

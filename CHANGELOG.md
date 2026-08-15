@@ -1,5 +1,38 @@
 # Changelog
 
+## [2.0.0-alpha.0] - 2026-08-15
+
+### Changed (BREAKING -- the sole intended break of v2.0.0)
+- **The caps seam.** Every sink now advertises a frozen `caps` descriptor and `reactiveField`
+  reads it EXACTLY ONCE, at bind, via `assertCaps` -- never per frame. The per-frame closure
+  reads no caps, and the hot path (`upload`/`draw`/`pickAt` in GLBackend.js, `flush`/`push`/
+  `set`/`swapRemove` in GL.js) is byte-unchanged from v1.5.0 (fenced by `test/hash_parity.mjs`).
+
+  ```
+  caps = { api:"webgl2", instancing:true, baseVertex:false, maxInstances:0xFFFFFF,
+           precisionHi:<per-sink>, pickMode:"sync", version:1 }
+  ```
+
+  `precisionHi` is `true` only on `createPointHiSink`; the other three advertise `false`.
+  `pickMode` is `"sync"` on all four WebGL2 sinks. `maxInstances` (`0xFFFFFF`) aligns with
+  `PICK_MAX_ID + 1`.
+- **`reactiveField` now fails closed on capability mismatch** (was: bound anything). A sink
+  with no `caps` object throws; a `LAYOUT.POINT_HI` field bound to a non-`precisionHi` sink
+  throws; a field whose `capacity` exceeds `caps.maxInstances` throws with a size hint.
+
+  **Migration:** a custom sink must now expose a `caps` object (copy the shape above). A sink
+  without one no longer binds.
+
+### Added
+- **`test/hash_parity.mjs`** -- committed SHA256 baselines of the hot-function source text; the
+  build fails if any hot body drifts. Only `reactiveField` and `didYouMean` may change in GL8a.
+- **Torture tier T8b** -- a `Proxy`-wrapped `caps` counts every `get` after bind and asserts it
+  is zero across 1e6 frames, for all four layouts (POINT / POINT_HI / QUAD / LINE).
+
+### Internal
+- `didYouMean(key, candidates = FIELD_KEYS)` generalized (cold path; the createField call site
+  is byte-behavior-unchanged via the default arg).
+
 ## [1.5.0] - 2026-08-11
 
 ### Added

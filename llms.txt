@@ -155,9 +155,28 @@ A frame re-projects in place and uploads only the dirty float window -- no
 allocation. Verified: 60 frames of full 1M-point re-projection with the backing
 Float32Array reference unchanged and the engine pool counters flat.
 
+## v2.0.0-alpha.0 -- the caps seam (the sole intended breaking surface)
+
+export const VERSION = "2.0.0-alpha.0" (package.json + GL.js + llms.txt kept in lockstep).
+
+CAPS SEAM (GL8a). Every sink now advertises a FROZEN caps descriptor:
+
+  caps = { api:"webgl2", instancing:true, baseVertex:false, maxInstances:0xFFFFFF,
+           precisionHi:<per-sink>, pickMode:"sync", version:1 }
+
+precisionHi is true ONLY on createPointHiSink; the other three advertise false. pickMode
+is "sync" on all four WebGL2 sinks. maxInstances (0xFFFFFF) aligns with PICK_MAX_ID + 1.
+
+reactiveField reads sink.caps EXACTLY ONCE, at bind, via assertCaps, and fails closed:
+a sink with no caps throws; a LAYOUT.POINT_HI field bound to a non-precisionHi sink throws;
+a field whose capacity exceeds caps.maxInstances throws with a size hint. The per-frame
+closure reads NO caps -- the hot path (upload/draw/pickAt/flush/push/set/swapRemove) is
+byte-unchanged from v1.5.0 and is fenced by test/hash_parity.mjs. THE BREAK: a custom sink
+must now expose a caps object; a sink without one no longer binds.
+
 ## v1.5.0 -- the counters seam (lite-profiler) + the zero-tolerance dirty-range gate
 
-export const VERSION = "1.5.0" (package.json + GL.js + llms.txt kept in lockstep).
+export const VERSION = "1.5.0" was the prior lockstep version (package.json + GL.js + llms.txt).
 
 COUNTERS SEAM (GL6). Every WebGL2 sink takes an OPTIONAL, zero-dependency counters
 handle -- duck-typed { recordUpload(floatCount), recordDraw(drawCount) }, exactly the

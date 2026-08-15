@@ -282,6 +282,26 @@ void main() {
  */
 export const PICK_MAX_ID = 0xFFFFFE;
 
+/**
+ * Frozen sink capability descriptor (v2.0.0 -- the caps seam). The GL-agnostic core
+ * (reactiveField -> assertCaps) reads this EXACTLY ONCE at bind, never per frame, and
+ * the per-frame closure gains no `caps.*` read. Frozen so a bound field's capabilities
+ * cannot mutate under it. `maxInstances` is PICK_MAX_ID + 1 (0xFFFFFF), the largest
+ * pickable count. All four WebGL2 sinks advertise `pickMode:"sync"`; only createPointHiSink
+ * advertises `precisionHi:true`. Built once per sink on the cold construction path.
+ */
+function makeCaps(precisionHi) {
+    return Object.freeze({
+        api: "webgl2",
+        instancing: true,
+        baseVertex: false,
+        maxInstances: PICK_MAX_ID + 1,
+        precisionHi: precisionHi,
+        pickMode: "sync",
+        version: 1,
+    });
+}
+
 const PROGRAM_SOURCES = {
     point: [POINT_VS, POINT_FS],
     quad: [QUAD_VS, QUAD_FS],
@@ -526,6 +546,7 @@ const POINT_STRIDE_BYTES = POINT_STRIDE * 4;
  */
 export function createPointSink(gl, opts) {
     const capacity = opts.capacity;
+    const caps = makeCaps(false);
     const canvas = gl.canvas;
 
     let program = null, uResolution = null, vao = null, vbo = null;
@@ -586,6 +607,7 @@ export function createPointSink(gl, opts) {
     const api = {
         gl,
         capacity,
+        caps,
         resize(w, h) {
             resW = w; resH = h;
             if (!lost) gl.viewport(0, 0, w, h);
@@ -685,6 +707,7 @@ const POINT_HI_STRIDE_BYTES = POINT_HI_STRIDE * 4;
  */
 export function createPointHiSink(gl, opts) {
     const capacity = opts.capacity;
+    const caps = makeCaps(true);
     const canvas = gl.canvas;
 
     let program = null, vao = null, vbo = null;
@@ -772,6 +795,7 @@ export function createPointHiSink(gl, opts) {
     const api = {
         gl,
         capacity,
+        caps,
 
         /**
          * Move the camera. Zero allocation, zero upload -- this is the whole point of the
@@ -896,6 +920,7 @@ const UNIT_QUAD = new Float32Array([
  */
 export function createQuadSink(gl, opts) {
     const capacity = opts.capacity;
+    const caps = makeCaps(false);
     const canvas = gl.canvas;
 
     let program = null, uResolution = null, vao = null;
@@ -981,6 +1006,7 @@ export function createQuadSink(gl, opts) {
     const api = {
         gl,
         capacity,
+        caps,
         /** Match the viewport (call on canvas resize). */
         resize(w, h) {
             resW = w; resH = h;
@@ -1079,6 +1105,7 @@ const UNIT_LINE = new Float32Array([
  */
 export function createLineSink(gl, opts) {
     const capacity = opts.capacity;
+    const caps = makeCaps(false);
     const canvas = gl.canvas;
 
     let program = null, uResolution = null, vao = null;
@@ -1164,6 +1191,7 @@ export function createLineSink(gl, opts) {
     const api = {
         gl,
         capacity,
+        caps,
         /** Match the viewport (call on canvas resize). */
         resize(w, h) {
             resW = w; resH = h;

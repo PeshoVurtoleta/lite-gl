@@ -29,7 +29,7 @@ import {
 import { frameDelta } from "@zakkster/lite-raf";
 
 /** Package version. Kept in sync with package.json and llms.txt (packaging law). */
-export const VERSION = "1.5.0";
+export const VERSION = "2.0.0-alpha.0";
 
 /** Hard cap on a field's instance capacity: 2^30. Above this the power-of-two
  *  sizing (`p <<= 1`, a 32-bit shift) would wrap negative and `nextPow2` could
@@ -69,11 +69,11 @@ function editDistance(a, b) {
     }
     return row[n];
 }
-function didYouMean(key) {
+function didYouMean(key, candidates = FIELD_KEYS) {
     let best = null, bestD = Infinity;
-    for (let i = 0; i < FIELD_KEYS.length; i++) {
-        const d = editDistance(key, FIELD_KEYS[i]);
-        if (d < bestD) { bestD = d; best = FIELD_KEYS[i]; }
+    for (let i = 0; i < candidates.length; i++) {
+        const d = editDistance(key, candidates[i]);
+        if (d < bestD) { bestD = d; best = candidates[i]; }
     }
     return bestD <= 3 ? best : null;
 }
@@ -220,6 +220,54 @@ export function createField(cfg) {
 }
 
 /**
+ * Bind-time (ONCE) capability check -- the v2.0.0 caps seam. Cold path: this runs when a
+ * field is bound in reactiveField, never per frame, and the per-frame `frame` closure
+ * gains NO `sink.caps.*` read. Fails closed on every unverified state (null is not zero):
+ *   - a sink with no caps descriptor -> throw (refuse to bind an un-advertised sink);
+ *   - a POINT_HI-stride field on a sink that does not advertise precisionHi -> throw;
+ *   - a field whose capacity exceeds caps.maxInstances -> throw with a size hint.
+ * Everything read here is validated and discarded; nothing caps-derived leaks into the hot path.
+ */
+function assertCaps(sink, field) {
+    const caps = sink && sink.caps;
+    if (caps === null || typeof caps !== "object") {
+        throw new Error(
+            "lite-gl reactiveField: sink.caps is missing -- a sink must advertise a frozen "
+            + "caps descriptor (v2.0.0). Refusing to bind (null is not zero)."
+        );
+    }
+    // Fail closed on a malformed descriptor BEFORE the comparisons below: a caps that
+    // omits maxInstances would make `field.capacity > undefined` fail OPEN (=== false),
+    // silently binding an over-capacity field. A non-boolean precisionHi is equally an
+    // un-advertised capability. Built-in sinks always satisfy this; it hardens the
+    // custom-caps path the v2 seam invites.
+    if (typeof caps.precisionHi !== "boolean") {
+        throw new Error(
+            "lite-gl reactiveField: sink.caps.precisionHi must be a boolean -- got "
+            + String(caps.precisionHi) + ". Refusing to bind (unverified capability)."
+        );
+    }
+    if (typeof caps.maxInstances !== "number" || !Number.isFinite(caps.maxInstances)) {
+        throw new Error(
+            "lite-gl reactiveField: sink.caps.maxInstances must be a finite number -- got "
+            + String(caps.maxInstances) + ". Refusing to bind (null is not zero)."
+        );
+    }
+    if (field.stride === LAYOUT.POINT_HI && !caps.precisionHi) {
+        throw new Error(
+            "lite-gl reactiveField: field stride is LAYOUT.POINT_HI (" + LAYOUT.POINT_HI + ") but this "
+            + "sink does not advertise precisionHi -- bind a POINT_HI field to a createPointHiSink."
+        );
+    }
+    if (field.capacity > caps.maxInstances) {
+        throw new RangeError(
+            "lite-gl reactiveField: field capacity " + field.capacity + " exceeds sink caps.maxInstances "
+            + caps.maxInstances + " -- lower the field capacity or split the field across sinks."
+        );
+    }
+}
+
+/**
  * Bind a field to reactive inputs: `project(field)` (which reads signals and writes
  * the field) re-runs when a tracked signal changes, and the dirty range is flushed
  * to `sink` once per frame on lite-raf. { manual: true } -> drive via frame()/flush().
@@ -234,6 +282,10 @@ export function createDriver(reg) {
         const project = opts.project;
         const sink = opts.sink;
         const manual = !!opts.manual;
+
+        // v2.0.0 caps seam: read sink.caps EXACTLY ONCE, here at bind, and fail closed.
+        // Nothing below reads caps -- the per-frame `frame` closure stays caps-free.
+        assertCaps(sink, field);
 
         let unsubFrame = null;
         let disposed = false;

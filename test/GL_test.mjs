@@ -10,8 +10,13 @@ function withRoot(fn) {
 }
 
 // A mock GPU sink: records uploads and draws, allocates nothing per call.
+// caps advertises precisionHi so this mock binds every layout (POINT..POINT_HI) in tests.
 function mockSink() {
     return {
+        caps: Object.freeze({
+            api: "mock", instancing: true, baseVertex: false,
+            maxInstances: 0xFFFFFF, precisionHi: true, pickMode: "sync", version: 1,
+        }),
         uploads: 0, lastFloatOffset: -1, lastFloatCount: -1, lastInstanceOffset: -1,
         draws: 0, lastCount: -1,
         upload(_data, floatOffset, floatCount, instanceOffset) {
@@ -247,6 +252,7 @@ test("reactiveField re-seeds the whole active range when the sink's GL context i
     // backend's onContextRestored does, so we can fire it deterministically here.
     let fireRestore = null;
     const sink = {
+        caps: Object.freeze({ api: "mock", instancing: true, baseVertex: false, maxInstances: 0xFFFFFF, precisionHi: false, pickMode: "sync", version: 1 }),
         uploads: 0, lastFloatOffset: -1, lastFloatCount: -1, draws: 0, lastCount: -1,
         upload(_d, fo, fc) { this.uploads++; this.lastFloatOffset = fo; this.lastFloatCount = fc; },
         draw(c) { this.draws++; this.lastCount = c; },
