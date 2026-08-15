@@ -181,6 +181,120 @@ test("caps: precisionHi is true on EXACTLY createGPUPointHiSink", async () => {
 });
 
 // ===========================================================================
+// Blend (baked into the DRAW pipeline at construction; PICK pipeline stays opaque).
+// ===========================================================================
+
+const ADDITIVE_BLEND = {
+  color: { srcFactor: "src-alpha", dstFactor: "one", operation: "add" },
+  alpha: { srcFactor: "one", dstFactor: "one", operation: "add" },
+};
+const ALPHA_BLEND = {
+  color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha", operation: "add" },
+  alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha", operation: "add" },
+};
+
+test("blend: default (no blend opt) builds an OPAQUE draw pipeline (no blend key on the target)", async () => {
+  const { target, rec } = await makeTarget();
+  const sink = createGPUPointSink(target, { capacity: 64 });
+  assert.equal(sink.blend, "opaque", "api.blend defaults to the opaque string");
+  assert.equal(rec.lastDrawPipelineDesc.fragment.targets[0].blend, undefined,
+    "the opaque draw target carries NO blend key");
+  // `.blend === undefined` alone cannot distinguish an OMITTED key from an explicit
+  // `{ blend: undefined }` key (both read back as undefined via property access) --
+  // deepEqual on the whole target object closes that gap: an extra explicit-undefined
+  // key changes Object.keys() and must fail this assertion.
+  assert.deepEqual(rec.lastDrawPipelineDesc.fragment.targets[0], { format: target.format },
+    "the opaque draw target is EXACTLY { format } -- no blend key present at all, not even blend:undefined");
+  sink.dispose();
+});
+
+test("blend: passing blend:null explicitly resolves to \"opaque\" (does not throw, matches the omitted-key default)", async () => {
+  const { target, rec } = await makeTarget();
+  const sink = createGPUPointSink(target, { capacity: 64, blend: null });
+  assert.equal(sink.blend, "opaque", "explicit null normalizes to the opaque string, not \"null\"");
+  assert.deepEqual(rec.lastDrawPipelineDesc.fragment.targets[0], { format: target.format },
+    "an explicit null blend produces the identical exact-shape opaque target as the omitted-key default");
+  sink.dispose();
+});
+
+test("blend: 'additive' bakes the exact additive blend state into the draw target", async () => {
+  const { target, rec } = await makeTarget();
+  const sink = createGPUPointSink(target, { capacity: 64, blend: "additive" });
+  assert.equal(sink.blend, "additive");
+  assert.deepEqual(rec.lastDrawPipelineDesc.fragment.targets[0].blend, ADDITIVE_BLEND,
+    "the additive draw target carries the exact additive blend descriptor");
+  sink.dispose();
+});
+
+test("blend: 'alpha' bakes the exact alpha blend state into the draw target", async () => {
+  const { target, rec } = await makeTarget();
+  const sink = createGPUPointSink(target, { capacity: 64, blend: "alpha" });
+  assert.equal(sink.blend, "alpha");
+  assert.deepEqual(rec.lastDrawPipelineDesc.fragment.targets[0].blend, ALPHA_BLEND,
+    "the alpha draw target carries the exact alpha blend descriptor");
+  sink.dispose();
+});
+
+test("blend: an unknown mode throws BEFORE any device resource is created (pipelineCount === 0)", async () => {
+  const { target, rec } = await makeTarget();
+  assert.equal(rec.pipelineCount, 0, "sanity: no pipeline built by target construction alone");
+  assert.throws(
+    () => createGPUPointSink(target, { capacity: 64, blend: "addative" }),
+    /unknown blend mode.*did you mean.*opaque, additive, alpha/,
+    "an unknown blend mode fails closed with a did-you-mean hint"
+  );
+  assert.equal(rec.pipelineCount, 0, "the throw is pre-device: ZERO pipelines were created");
+});
+
+test("blend: the PICK pipeline is ALWAYS opaque -- for every mode across every factory (12 checks)", async () => {
+  const factories = [createGPUPointSink, createGPUPointHiSink, createGPUQuadSink, createGPULineSink];
+  const modes = ["opaque", "additive", "alpha"];
+  for (const factory of factories) {
+    for (const mode of modes) {
+      const { target, rec } = await makeTarget();
+      const sink = factory(target, { capacity: 16, blend: mode });
+      assert.equal(rec.lastPickPipelineDesc.fragment.targets[0].format, "rgba8unorm",
+        "sanity: the recorded pick pipeline targets the id format");
+      assert.equal(rec.lastPickPipelineDesc.fragment.targets[0].blend, undefined,
+        "the pick pipeline NEVER carries a blend key (blending ids corrupts the decode) -- mode=" + mode);
+      // Same exact-shape closure as the draw-target gap above: reject an explicit
+      // { blend: undefined } key on the pick target, not just a `=== undefined` read.
+      assert.deepEqual(rec.lastPickPipelineDesc.fragment.targets[0], { format: "rgba8unorm" },
+        "the pick target is EXACTLY { format } for every mode -- mode=" + mode);
+      sink.dispose();
+    }
+  }
+});
+
+test("blend: api.blend reports the exact normalized mode string, for every mode across every factory", async () => {
+  const factories = [
+    ["createGPUPointSink", createGPUPointSink],
+    ["createGPUPointHiSink", createGPUPointHiSink],
+    ["createGPUQuadSink", createGPUQuadSink],
+    ["createGPULineSink", createGPULineSink],
+  ];
+  const modes = ["opaque", "additive", "alpha"];
+  for (const [name, factory] of factories) {
+    for (const mode of modes) {
+      const { target } = await makeTarget();
+      const sink = factory(target, { capacity: 16, blend: mode });
+      assert.equal(sink.blend, mode, name + " must report blend===" + JSON.stringify(mode) + " verbatim");
+      sink.dispose();
+    }
+  }
+});
+
+test("blend: caps stays frozen with the unchanged key set/order regardless of the blend option", async () => {
+  const { target } = await makeTarget();
+  const sink = createGPUPointSink(target, { capacity: 16, blend: "additive" });
+  assert.ok(Object.isFrozen(sink.caps), "caps must still be frozen with a non-default blend option");
+  assert.deepEqual(Object.keys(sink.caps), CAPS_KEYS,
+    "caps key set/order is unaffected by the blend option -- blend is NOT a caps key");
+  assert.equal("blend" in sink.caps, false, "blend lives on the sink api, never leaks into caps");
+  sink.dispose();
+});
+
+// ===========================================================================
 // Upload capacity guard (fail closed, same shape as the WebGL2 sink).
 // ===========================================================================
 

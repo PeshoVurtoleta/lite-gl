@@ -61,7 +61,7 @@ function writeLine(arr, i, x0, y0, x1, y1, width, r, g, b, a) {
 // screen-pixel (x,y) -> readPixels window pixel (origin bottom-left); shader flips y.
 const win = (x, y) => [x, SIZE - y];
 
-async function run() {
+async function runWebGL2() {
     const canvas = document.getElementById("c");
     const gl = canvas.getContext("webgl2", { antialias: false, alpha: false, preserveDrawingBuffer: true });
     if (!gl) { add("webgl2 available", false, "getContext('webgl2') returned null"); return finish(); }
@@ -281,6 +281,145 @@ async function run() {
     finish();
 }
 
+// Poll a deferred pick across up to ~60 rAF ticks until it resolves off PICK_PENDING.
+// Each call re-issues pick() with the same (x,y,count); the pooled readback ring hands
+// back the decoded id (or -1 miss) once its async mapAsync settles.
+async function pollPick(sink, x, y, count, pending) {
+    for (let t = 0; t < 60; t++) {
+        await new Promise((r) => requestAnimationFrame(() => r()));
+        const v = sink.pick(x, y, count);
+        if (v !== pending) return v;
+    }
+    return sink.pick(x, y, count);
+}
+
+// WebGPU scene: the beta's headline breaks (WebGPU sink + DEFERRED pick) on real pixels.
+// SKIP discipline: absent navigator.gpu / null adapter / null device -> ok:null. But once
+// an adapter IS acquired, any later throw is a FAIL (ok:false), never a skip.
+async function runWebGPU() {
+    const canvas = document.getElementById("c");
+    if (!navigator.gpu) { add("webgpu available", null, "no navigator.gpu"); return finish(); }
+    add("webgpu available", true);
+
+    let adapter = null;
+    try {
+        adapter = await navigator.gpu.requestAdapter();
+    } catch (e) {
+        add("webgpu adapter", null, "requestAdapter threw: " + String(e && e.message || e));
+        return finish();
+    }
+    if (!adapter) { add("webgpu adapter", null, "no WebGPU adapter"); return finish(); }
+    add("webgpu adapter acquired", true);
+
+    // Adapter EXISTS from here: a thrown step below is a FAIL, not a skip (planner risk).
+    // Handles are declared up here so `finally` tears them down even on a mid-scene throw.
+    let gpuCanvas = null, target = null, pt = null, quad = null, glow = null;
+    try {
+        const device = await adapter.requestDevice();
+        if (!device) { add("webgpu device", null, "adapter.requestDevice() yielded null"); return finish(); }
+
+        const { createGPUTarget, createGPUPointSink, createGPUQuadSink, PICK_PENDING } =
+            await import("../GLWebGPU.js");
+        // (createGPUPointSink is reused below for the additive "phosphor glow" check.)
+
+        gpuCanvas = document.createElement("canvas");
+        gpuCanvas.width = SIZE; gpuCanvas.height = SIZE;
+        document.body.appendChild(gpuCanvas);
+        target = await createGPUTarget(gpuCanvas, { device });
+        add("createGPUTarget constructs on a real device", true);
+
+        // Real-pixel readback: present the WebGPU canvas, blit it into a 2D canvas, read px.
+        // getImageData is TOP-LEFT origin -- the same convention as the y-down screen input
+        // the sink takes -- so screen (x,y) reads at getImageData(x,y) (no bottom-left flip).
+        // All colour-check geometry sits on the vertical centre (y=32) so the result is
+        // Y-flip-invariant regardless of framebuffer origin; only X varies.
+        const rc = document.createElement("canvas"); rc.width = SIZE; rc.height = SIZE;
+        const rctx = rc.getContext("2d", { willReadFrequently: true });
+        const present = () => new Promise((r) => requestAnimationFrame(() => r()));
+        async function readWG(x, y) {
+            await present();
+            rctx.clearRect(0, 0, SIZE, SIZE);
+            rctx.drawImage(gpuCanvas, 0, 0);
+            return rctx.getImageData(x, y, 1, 1).data;
+        }
+
+        // POINT: two white points, well separated; the centre gap stays dark.
+        pt = createGPUPointSink(target, { capacity: 1024 });
+        pt.resize(SIZE, SIZE); pt.setClearColor(0, 0, 0, 1);
+        add("point sink constructs", true);
+
+        const pts = new Float32Array(2 * 8);
+        writePoint(pts, 0, 20, 32, 14, 1, 1, 1, 1);   // inst 0, left
+        writePoint(pts, 1, 44, 32, 14, 1, 1, 1, 1);   // inst 1, right
+        pt.upload(pts, 0, 16); pt.draw(2);
+        const p0 = await readWG(20, 32), pMid = await readWG(32, 32), p1 = await readWG(44, 32);
+        add("point renders both instances (real pixels)",
+            p0[0] > 200 && p1[0] > 200, "p0 RGBA = " + Array.from(p0).join(","));
+        add("point leaves the gap between instances dark", pMid[0] < 40,
+            "gap RGBA = " + Array.from(pMid).join(","));
+
+        // DEFERRED pick: the FIRST return is PICK_PENDING (-2); poll until it resolves.
+        const firstPick = pt.pick(20, 32, 2);
+        add("deferred pick returns PICK_PENDING (-2) first", firstPick === PICK_PENDING,
+            "first pick = " + firstPick);
+        const hitId = await pollPick(pt, 20, 32, 2, PICK_PENDING);
+        add("deferred pick resolves to the hit instance", hitId === 0, "resolved = " + hitId);
+        const missId = await pollPick(pt, 32, 8, 2, PICK_PENDING);
+        add("deferred pick resolves a miss to -1", missId === -1, "resolved = " + missId);
+
+        // QUAD: two red quads; the red channel lights each centre, the gap stays dark.
+        quad = createGPUQuadSink(target, { capacity: 1024 });
+        quad.resize(SIZE, SIZE); quad.setClearColor(0, 0, 0, 1);
+        add("quad sink constructs", true);
+
+        const quads = new Float32Array(2 * 9);
+        writeQuad(quads, 0, 20, 32, 16, 16, 0, 1, 0, 0, 1);   // quad 0: red, left
+        writeQuad(quads, 1, 44, 32, 16, 16, 0, 1, 0, 0, 1);   // quad 1: red, right
+        quad.upload(quads, 0, 18); quad.draw(2);
+        const q0 = await readWG(20, 32), qMid = await readWG(32, 32), q1 = await readWG(44, 32);
+        add("quad renders red coverage at both centres",
+            q0[0] > 200 && q0[1] < 40 && q1[0] > 200, "q0 RGBA = " + Array.from(q0).join(","));
+        add("quad leaves the gap between instances dark", qMid[0] < 40,
+            "gap RGBA = " + Array.from(qMid).join(","));
+
+        // ADDITIVE "phosphor glow": a point sink built with blend:"additive" accumulates
+        // overlapping coverage on REAL pixels -- two half-gray points at the same spot are
+        // BRIGHTER than a single one (the WebGL2 additive-glow parity, baked in the pipeline).
+        glow = createGPUPointSink(target, { capacity: 1024, blend: "additive" });
+        glow.resize(SIZE, SIZE); glow.setClearColor(0, 0, 0, 1);
+        add("additive point sink constructs", true);
+        add("additive sink reports its blend mode", glow.blend === "additive", "blend = " + glow.blend);
+
+        const gx = 32, gy = 32;
+        const gOne = new Float32Array(8);
+        writePoint(gOne, 0, gx, gy, 14, 0.5, 0.5, 0.5, 1);   // one half-gray point
+        glow.upload(gOne, 0, 8); glow.draw(1);
+        const gSingle = await readWG(gx, gy);
+
+        const gTwo = new Float32Array(2 * 8);
+        writePoint(gTwo, 0, gx, gy, 14, 0.5, 0.5, 0.5, 1);   // two overlapping half-gray points
+        writePoint(gTwo, 1, gx, gy, 14, 0.5, 0.5, 0.5, 1);
+        glow.upload(gTwo, 0, 16); glow.draw(2);
+        const gDouble = await readWG(gx, gy);
+
+        add("additive blend accumulates: the overlap is brighter than a single point",
+            gDouble[0] > gSingle[0] + 10,
+            "single R=" + gSingle[0] + " overlap R=" + gDouble[0]);
+    } catch (e) {
+        // Adapter existed: a post-acquisition throw is a FAIL, never a skip (planner risk).
+        add("webgpu scene runs without error after adapter acquisition", false,
+            String((e && e.stack) || (e && e.message) || e));
+    } finally {
+        // Tear down even on a mid-scene throw (page-teardown-bounded hygiene, not a hot path).
+        if (pt) pt.dispose();
+        if (quad) quad.dispose();
+        if (glow) glow.dispose();
+        if (target) target.dispose();
+        if (gpuCanvas) gpuCanvas.remove();
+    }
+    finish();
+}
+
 function finish() {
     const failed = checks.filter((c) => c.ok === false);
     const pass = failed.length === 0;
@@ -301,10 +440,24 @@ function finish() {
     document.title = "lite-gl smoke: " + (pass ? "PASS" : "FAIL");
 }
 
-run().catch((err) => {
-    add("uncaught error", false, String(err && err.message || err));
+// Gate the two backends on ?scene=. Default / ?scene=webgl2 -> the WebGL2 checks;
+// ?scene=webgpu -> the WebGPU checks. Both write one __SMOKE_RESULT__ shape. An
+// unknown scene FAILS CLOSED (null is not zero): it records a FAIL, never a silent
+// fall-through to WebGL2 that would false-green under the webgpu project.
+const scene = new URLSearchParams(location.search).get("scene") || "webgl2";
+let runner = null;
+if (scene === "webgpu") runner = runWebGPU;
+else if (scene === "webgl2") runner = runWebGL2;
+
+if (!runner) {
+    add("known scene requested", false, "unknown scene '" + scene + "' (expected 'webgl2' or 'webgpu')");
     finish();
-});
+} else {
+    runner().catch((err) => {
+        add("uncaught error", false, String(err && err.message || err));
+        finish();
+    });
+}
 </script>
 </body>
 </html>

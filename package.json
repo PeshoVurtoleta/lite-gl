@@ -1,6 +1,6 @@
 {
   "name": "@zakkster/lite-gl",
-  "version": "2.0.0-beta.0",
+  "version": "2.0.0",
   "description": "Signal-native instanced primitive renderer: project ~1M points/quads/lines from reactive inputs, upload only what changed, draw in one instanced call. Deep-zoom precision via a GPU camera with double-emulated world coordinates. Zero-GC core + a browser WebGL2 backend.",
   "type": "module",
   "main": "./GL.js",
@@ -40,7 +40,7 @@
     "LICENSE.txt"
   ],
   "scripts": {
-    "test": "node --test test/GL_test.mjs test/GLBackend_test.mjs test/caps_test.mjs test/GLWebGPU_test.mjs test/precision_parity_test.mjs test/packaging_test.mjs && npm run test:gates",
+    "test": "node --test test/GL_test.mjs test/GLBackend_test.mjs test/caps_test.mjs test/GLWebGPU_test.mjs test/precision_parity_test.mjs test/packaging_test.mjs test/smoke_static_test.mjs && npm run test:gates",
     "test:gates": "node test/gates/dirty-range.mjs && node test/gates/webgpu-frame-alloc.mjs && node test/hash_parity.mjs",
     "pretest:torture": "npm install @zakkster/lite-signal@1.5.0-beta.7 --prefix node_modules/@zakkster/lite-leak --no-save --no-audit --no-fund --legacy-peer-deps",
     "test:torture": "node --expose-gc test/torture.mjs",
@@ -55,7 +55,8 @@
     "@zakkster/lite-gc-profiler": "^1.15.0",
     "@zakkster/lite-leak": "^1.8.1",
     "@zakkster/lite-raf": "^1.1.0",
-    "@zakkster/lite-signal": ">=1.6.0-preview.2"
+    "@zakkster/lite-signal": ">=1.6.0-preview.2",
+    "typescript": "^5.7.0"
   },
   "overrides": {
     "@zakkster/lite-raf": {

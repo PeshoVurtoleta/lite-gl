@@ -152,6 +152,42 @@
             color: var(--green);
         }
 
+        .backend-toggle {
+            display: flex;
+            gap: 0.25rem;
+            margin-left: auto;
+            align-items: center;
+        }
+
+        .backend-toggle button {
+            background: var(--bg-2);
+            border: 1px solid var(--line);
+            color: var(--text-dim);
+            font-family: var(--mono);
+            font-size: 0.72rem;
+            padding: 0.35rem 0.6rem;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+        .backend-toggle button[aria-pressed="true"] {
+            color: var(--green);
+            border-color: var(--green-dim);
+        }
+
+        .backend-toggle button[disabled] {
+            color: var(--text-faint);
+            cursor: not-allowed;
+            opacity: 0.5;
+        }
+
+        @media (hover: hover) {
+            .backend-toggle button:not([disabled]):hover {
+                color: var(--text);
+                border-color: var(--line-strong);
+            }
+        }
+
         .scene {
             display: none;
             grid-template-columns: 1fr 320px;
@@ -433,13 +469,17 @@
 <div id="app">
     <header class="top">
         <div class="brand"><span class="mark">&#9680;</span><span class="pkg">@zakkster/lite-gl</span><span
-                class="ver">v1.0.0</span></div>
+                class="ver">v2.0.0</span></div>
         <div class="tagline"><span class="dot"></span>oscilloscope &middot; instanced points on the reactive graph</div>
     </header>
 
     <nav class="tabs" id="tabs">
         <button data-tab="points" aria-current="true"><span class="scene-num">01</span>Million Points</button>
         <button data-tab="diff"><span class="scene-num">02</span>Dirty Upload</button>
+        <div class="backend-toggle" id="backend-toggle" role="group" aria-label="renderer backend">
+            <button type="button" data-backend="webgl2" aria-pressed="true">WebGL2</button>
+            <button type="button" data-backend="webgpu" aria-pressed="false">WebGPU</button>
+        </div>
     </nav>
 
     <main>
@@ -562,7 +602,8 @@
     "@zakkster/lite-signal": "https://esm.sh/@zakkster/lite-signal@1.6.0-preview.2",
     "@zakkster/lite-raf": "https://esm.sh/@zakkster/lite-raf@1.1.0?external=@zakkster/lite-signal",
     "@zakkster/lite-gl": "../GL.js",
-    "@zakkster/lite-gl/backend": "../GLBackend.js"
+    "@zakkster/lite-gl/backend": "../GLBackend.js",
+    "@zakkster/lite-gl/webgpu": "../GLWebGPU.js"
   }
 }
 
@@ -570,7 +611,8 @@
 <script type="module">
     import {signal, effect, stats} from "@zakkster/lite-signal";
     import {createField, reactiveField, LAYOUT} from "@zakkster/lite-gl";
-    import {createPointSink} from "@zakkster/lite-gl/backend";
+    import {createPointSink, createQuadSink, createLineSink, createPointHiSink} from "@zakkster/lite-gl/backend";
+    import {createGPUTarget, createGPUPointSink, createGPUQuadSink, createGPULineSink, createGPUPointHiSink, PICK_PENDING} from "@zakkster/lite-gl/webgpu";
 
     const $ = (id) => document.getElementById(id);
     const dpr = Math.min(2, window.devicePixelRatio || 1);
@@ -578,44 +620,141 @@
     const fmt = (n) => n.toLocaleString("en-US");
     const PLAY = "\u25b6 play", PAUSE = "\u275a\u275a pause";   // glyphs as escapes -> ASCII source
 
-    function getGL(canvas, noglId) {
-        const gl = canvas.getContext("webgl2", {antialias: false, alpha: false, premultipliedAlpha: false});
-        if (!gl) {
-            $(noglId).style.display = "block";
-            return null;
-        }
-        gl.enable(gl.BLEND);
-        gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive glow
-        return gl;
-    }
-
-    function sizeCanvas(canvas, sink) {
+    // Set a canvas to its CSS box in device pixels; returns [w, h]. Reflow-bearing, so it
+    // only runs on resize/mount (cold), never inside a frame loop.
+    function sizeCanvas(canvas) {
         const r = canvas.getBoundingClientRect();
         const w = Math.max(1, Math.floor(r.width * dpr));
         const h = Math.max(1, Math.floor(r.height * dpr));
-        if (canvas.width !== w || canvas.height !== h) {
-            canvas.width = w;
-            canvas.height = h;
-            if (sink) sink.resize(w, h);   // keep u_resolution in sync with device pixels
+        if (canvas.width !== w) canvas.width = w;
+        if (canvas.height !== h) canvas.height = h;
+        return [w, h];
+    }
+
+    // ==========================================================================
+    // BACKEND ADAPTER - live WebGL2 <-> WebGPU toggle (demo-only shim). Device
+    // acquire/dispose/rebind happens on TOGGLE only (cold); beginFrame/setClearColor/resize
+    // never allocate and never force a reflow, so a scene's frame loop stays hot-path clean.
+    // ==========================================================================
+    let _gpuProbe = null;
+    function probeWebGPU() {
+        if (_gpuProbe) return _gpuProbe;
+        _gpuProbe = (async () => {
+            try {
+                const gpu = navigator.gpu;
+                if (!gpu) return {available: false, reason: "navigator.gpu missing"};
+                const adapter = await gpu.requestAdapter();
+                if (!adapter) return {available: false, reason: "no GPU adapter"};
+                const device = await adapter.requestDevice();
+                if (!device) return {available: false, reason: "no GPU device"};
+                return {available: true, device};
+            } catch (e) {
+                return {available: false, reason: (e && e.message) ? e.message : String(e)};
+            }
+        })();
+        return _gpuProbe;
+    }
+
+    const GL_CTORS = {point: createPointSink, quad: createQuadSink, line: createLineSink, pointHi: createPointHiSink};
+    const GPU_CTORS = {point: createGPUPointSink, quad: createGPUQuadSink, line: createGPULineSink, pointHi: createGPUPointHiSink};
+
+    function applyGLBlend(gl, blend) {
+        if (blend === "opaque") { gl.disable(gl.BLEND); return; }
+        gl.enable(gl.BLEND);
+        if (blend === "alpha") gl.blendFunc(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA);
+        else gl.blendFunc(gl.SRC_ALPHA, gl.ONE);   // additive
+    }
+
+    function freshCanvas(stageEl) {
+        const old = stageEl.querySelector("canvas");
+        const next = document.createElement("canvas");
+        next.id = old.id;
+        next.className = old.className;
+        next.width = old.width || 1;
+        next.height = old.height || 1;
+        stageEl.replaceChild(next, old);
+        return next;
+    }
+
+    // specs[i] = { key, prim, capacity, blend, glAttrs }. prim in point|pointHi|quad|line.
+    async function mountBackend(kind, stageEl, specs) {
+        const canvas = freshCanvas(stageEl);
+        const sinks = Object.create(null);
+        const keys = [];
+        const list = [];
+        const pickLast = new Int32Array(specs.length).fill(-1);
+        const pickBusyF = new Uint8Array(specs.length);
+
+        const bk = {
+            kind, canvas, sinks, w: canvas.width, h: canvas.height,
+            beginFrame: null, setClearColor: null, resize: null, pick: null, pickBusy: null, dispose: null,
+        };
+        const ordOf = (key) => { for (let i = 0; i < keys.length; i++) if (keys[i] === key) return i; return -1; };
+
+        if (kind === "webgpu") {
+            const probe = await probeWebGPU();
+            if (!probe.available) throw new Error("webgpu unavailable: " + probe.reason);
+            const target = await createGPUTarget(canvas, {device: probe.device});
+            for (let i = 0; i < specs.length; i++) {
+                const s = specs[i];
+                const sink = GPU_CTORS[s.prim](target, {capacity: s.capacity, blend: s.blend || "opaque"});
+                sinks[s.key] = sink; keys.push(s.key); list.push(sink);
+            }
+            bk.beginFrame = () => {};   // sink self-clears on the first pass per getCurrentTexture identity
+            bk.setClearColor = (r, g, b, a) => { for (let i = 0; i < list.length; i++) list[i].setClearColor(r, g, b, a); };
+            bk.resize = (w, h) => { bk.w = w; bk.h = h; target.resize(w, h); for (let i = 0; i < list.length; i++) list[i].resize(w, h); };
+            bk.dispose = () => { for (let i = 0; i < list.length; i++) list[i].dispose(); target.dispose(); };
+            bk.pick = (key, x, y, n) => {
+                const ord = ordOf(key);
+                if (ord < 0) return -1;
+                const r = list[ord].pick(x, y, n);
+                if (r === PICK_PENDING) { pickBusyF[ord] = 1; return pickLast[ord]; }
+                pickBusyF[ord] = 0; pickLast[ord] = r; return r;
+            };
+            bk.pickBusy = (key) => {
+                if (key === undefined) { for (let i = 0; i < pickBusyF.length; i++) if (pickBusyF[i]) return true; return false; }
+                const ord = ordOf(key);
+                return ord >= 0 && pickBusyF[ord] === 1;
+            };
+        } else {
+            let attrs = null;
+            for (let i = 0; i < specs.length; i++) if (specs[i].glAttrs) { attrs = specs[i].glAttrs; break; }
+            const gl = canvas.getContext("webgl2", attrs || undefined);
+            if (!gl) throw new Error("webgl2 unavailable");
+            applyGLBlend(gl, specs[0].blend || "opaque");
+            for (let i = 0; i < specs.length; i++) {
+                const s = specs[i];
+                const sink = GL_CTORS[s.prim](gl, {capacity: s.capacity});
+                sinks[s.key] = sink; keys.push(s.key); list.push(sink);
+            }
+            const COLOR = gl.COLOR_BUFFER_BIT;
+            bk.beginFrame = () => gl.clear(COLOR);
+            bk.setClearColor = (r, g, b, a) => gl.clearColor(r, g, b, a);
+            bk.resize = (w, h) => { bk.w = w; bk.h = h; for (let i = 0; i < list.length; i++) list[i].resize(w, h); };
+            bk.dispose = () => { for (let i = 0; i < list.length; i++) list[i].dispose(); };
+            bk.pick = (key, x, y, n) => {
+                const ord = ordOf(key);
+                if (ord < 0) return -1;
+                const r = list[ord].pick(x, y, n);
+                pickLast[ord] = r; pickBusyF[ord] = 0; return r;
+            };
+            bk.pickBusy = () => false;
         }
+        return bk;
     }
 
     /* -- SCENE 1: MILLION POINTS ----------------------------------------------- */
     function scenePoints() {
-        const canvas = $("points-canvas");
-        const gl = getGL(canvas, "points-nogl");
-        if (!gl) return {
-            start() {
-            }, stop() {
-            }, resize() {
-            }
-        };
+        const $stage = $("points-stage"), $nogl = $("points-nogl");
 
         // 1<<20 is already a power of two, so field (nextPow2) and sink VBO agree exactly.
         const CAP = 1 << 20;
+        const SPECS = [{key: "pt", prim: "point", capacity: CAP, blend: "additive",
+            glAttrs: {antialias: false, alpha: false, premultipliedAlpha: false}}];
         const field = createField({capacity: CAP, stride: LAYOUT.POINT});
-        const sink = createPointSink(gl, {capacity: CAP});
-        sizeCanvas(canvas, sink);
+
+        let bk = null, handle = null;
+        let mySeq = 0, mounting = false;
 
         const N = signal(50_000);
         const phase = signal(0);
@@ -625,7 +764,7 @@
         // Tracked projection: rewrites the active points in place, then marks them dirty.
         function project(f) {
             const n = N(), pa = phase(), pat = pattern(), s = seed;
-            const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight;
+            const W = bk ? bk.w : 1, H = bk ? bk.h : 1;   // device px, hoisted -- no per-frame reflow
             const cx = W * 0.5, cy = H * 0.5, R = Math.min(W, H) * 0.46;
             const d = f.data, cols = Math.ceil(Math.sqrt(n));
             for (let i = 0; i < n; i++) {
@@ -666,16 +805,15 @@
             f.setCount(n);   // every point moved this frame, so the whole [0, n) range is genuinely dirty
         }
 
-        const handle = reactiveField(field, {project, sink, manual: true});
-
         // cache every DOM ref once -- no getElementById inside the loop
         const $fps = $("points-fps"), $ms = $("points-ms"), $count = $("points-count"),
             $upload = $("points-upload"), $bytes = $("points-bytes"), $draws = $("points-draws"),
             $alloc = $("points-alloc");
 
-        let raf = 0, playing = true, ph = 0, fAccum = 0, msAccum = 0, last = 0, lastAlloc = stats().totalAllocations;
+        let raf = 0, playing = true, running = false, ph = 0, fAccum = 0, msAccum = 0, last = 0, lastAlloc = stats().totalAllocations;
 
         function loop(now) {
+            if (!bk || !running) return;
             const t0 = performance.now();
             if (playing) {
                 ph += 0.006;
@@ -685,8 +823,7 @@
             const lo = field.dirtyLo(), hi = field.dirtyHi();
             const upFloats = lo >= 0 ? (hi - lo + 1) * field.stride : 0;
 
-            gl.clearColor(0.027, 0.035, 0.051, 1);
-            gl.clear(gl.COLOR_BUFFER_BIT);                    // CLEAR FIRST, then draw
+            bk.beginFrame();                                  // CLEAR FIRST, then draw
             handle.flush();                                   // upload only the dirty window, always draw (image persists when idle)
 
             fAccum++;
@@ -728,49 +865,68 @@
             pattern.set(+btn.dataset.p);
         });
 
+        function resize() {
+            if (!bk) return;
+            const [w, h] = sizeCanvas(bk.canvas);
+            bk.resize(w, h);
+            phase.set(ph += 1e-4);
+        }
+
+        // Cold: acquire/dispose/rebind the whole backend on TOGGLE only. Field DATA persists.
+        async function remount(kind) {
+            mounting = true;
+            const seq = ++mySeq;
+            if (raf) { cancelAnimationFrame(raf); raf = 0; }
+            if (handle) { handle.dispose(); handle = null; }
+            if (bk) { bk.dispose(); bk = null; }
+            let next;
+            try { next = await mountBackend(kind, $stage, SPECS); }
+            catch (e) { mounting = false; if (kind === "webgl2") $nogl.style.display = "block"; return; }
+            if (seq !== mySeq) { next.dispose(); return; }
+            bk = next;
+            bk.setClearColor(0.027, 0.035, 0.051, 1);
+            handle = reactiveField(field, {project, sink: bk.sinks.pt, manual: true});
+            mounting = false;
+            resize();
+            if (running) startLoop();
+        }
+
+        function startLoop() {
+            if (raf) return;
+            last = performance.now();
+            lastAlloc = stats().totalAllocations;
+            raf = requestAnimationFrame(loop);
+        }
+
+        remount("webgl2");
+
         return {
-            start() {
-                if (!raf) {
-                    last = performance.now();
-                    lastAlloc = stats().totalAllocations;
-                    raf = requestAnimationFrame(loop);
-                }
-            },
-            stop() {
-                if (raf) {
-                    cancelAnimationFrame(raf);
-                    raf = 0;
-                }
-            },
-            resize() {
-                sizeCanvas(canvas, sink);
-                phase.set(ph += 1e-4);
-            },
+            remount,
+            resize,
+            mounting: () => mounting,
+            kind: () => (bk ? bk.kind : null),
+            start() { running = true; if (bk && !mounting) startLoop(); },
+            stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
         };
     }
 
     /* -- SCENE 2: DIRTY UPLOAD ------------------------------------------------- */
     function sceneDiff() {
-        const canvas = $("diff-canvas");
-        const gl = getGL(canvas, "diff-nogl");
-        if (!gl) return {
-            start() {
-            }, stop() {
-            }, resize() {
-            }
-        };
+        const $stage = $("diff-stage"), $nogl = $("diff-nogl");
 
         const TOTAL = 1 << 18;   // 262144 = clean 512x512 grid; field nextPow2 and sink VBO agree exactly
+        const SPECS = [{key: "pt", prim: "point", capacity: TOTAL, blend: "additive",
+            glAttrs: {antialias: false, alpha: false, premultipliedAlpha: false}}];
         const field = createField({capacity: TOTAL, stride: LAYOUT.POINT});
-        const sink = createPointSink(gl, {capacity: TOTAL});
-        sizeCanvas(canvas, sink);
+
+        let bk = null, mySeq = 0, mounting = false, running = false;
 
         const cols = Math.ceil(Math.sqrt(TOTAL));   // hoisted; never recomputed in the loop
         const stride = field.stride;
         const totalFloats = TOTAL * stride;
 
         function layout() {
-            const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight, d = field.data;
+            const W = bk.w, H = bk.h, d = field.data;   // device px, hoisted from bk -- no reflow
             for (let i = 0; i < TOTAL; i++) {
                 const b = i * 8, gx = i % cols, gy = (i / cols) | 0;
                 d[b] = (gx + 0.5) / cols * W;
@@ -783,17 +939,16 @@
                 d[b + 7] = 0;
             }
             field.setCount(TOTAL);
-            field.flush(sink);   // one full upload + draw to seed the buffer
+            field.flush(bk.sinks.pt);   // one full upload + draw to seed the buffer
         }
-
-        layout();
 
         const $pct = $("diff-pct"), $floats = $("diff-floats"), $ratio = $("diff-ratio"), $bar = $("diff-bar");
 
         let raf = 0, playing = true, head = 0, band = 2000, tick = 0;
 
         function loop() {
-            const W = gl.drawingBufferWidth, H = gl.drawingBufferHeight, d = field.data;
+            if (!bk || !running) return;
+            const W = bk.w, H = bk.h, d = field.data;   // hoisted device px -- zero per-frame reflow
             // zero-GC: mutate the backing Float32Array directly, flag only the touched rows.
             for (let k = 0; k < band; k++) {
                 const i = (head + k) % TOTAL, b = i * 8, gx = i % cols, gy = (i / cols) | 0;
@@ -811,9 +966,8 @@
             const lo = field.dirtyLo(), hi = field.dirtyHi();
             const dirtyFloats = lo >= 0 ? (hi - lo + 1) * stride : 0;
 
-            gl.clearColor(0.027, 0.035, 0.051, 1);
-            gl.clear(gl.COLOR_BUFFER_BIT);
-            field.flush(sink);   // uploads only the dirty band window; draws all TOTAL
+            bk.beginFrame();
+            field.flush(bk.sinks.pt);   // uploads only the dirty band window; draws all TOTAL
 
             if ((tick++ & 7) === 0) {              // ~7 Hz telemetry, no per-frame string churn
                 const pct = (dirtyFloats / totalFloats) * 100;
@@ -837,20 +991,43 @@
             $("diff-band-v").textContent = fmt(band);
         });
 
+        function startLoop() {
+            if (raf) return;
+            raf = requestAnimationFrame(loop);
+        }
+
+        function resize() {
+            if (!bk) return;
+            const [w, h] = sizeCanvas(bk.canvas);
+            bk.resize(w, h);
+            layout();
+        }
+
+        async function remount(kind) {
+            mounting = true;
+            const seq = ++mySeq;
+            if (raf) { cancelAnimationFrame(raf); raf = 0; }
+            if (bk) { bk.dispose(); bk = null; }
+            let next;
+            try { next = await mountBackend(kind, $stage, SPECS); }
+            catch (e) { mounting = false; if (kind === "webgl2") $nogl.style.display = "block"; return; }
+            if (seq !== mySeq) { next.dispose(); return; }
+            bk = next;
+            bk.setClearColor(0.027, 0.035, 0.051, 1);
+            mounting = false;
+            resize();                 // re-seeds the fresh buffer via layout()
+            if (running) startLoop();
+        }
+
+        remount("webgl2");
+
         return {
-            start() {
-                if (!raf) raf = requestAnimationFrame(loop);
-            },
-            stop() {
-                if (raf) {
-                    cancelAnimationFrame(raf);
-                    raf = 0;
-                }
-            },
-            resize() {
-                sizeCanvas(canvas, sink);
-                layout();
-            },
+            remount,
+            resize,
+            mounting: () => mounting,
+            kind: () => (bk ? bk.kind : null),
+            start() { running = true; if (bk && !mounting) startLoop(); },
+            stop() { running = false; if (raf) { cancelAnimationFrame(raf); raf = 0; } },
         };
     }
 
@@ -858,16 +1035,56 @@
     const scenes = {points: scenePoints(), diff: sceneDiff()};   // each inits once -> listeners bound once, no leaks
     let current = "points";
 
+    // --- backend toggle: WebGL2 <-> WebGPU, persists across scene tabs ---------
+    const $toggle = $("backend-toggle");
+    const $btnGL = $toggle.querySelector("button[data-backend=\"webgl2\"]");
+    const $btnGPU = $toggle.querySelector("button[data-backend=\"webgpu\"]");
+    let backendKind = "webgl2";
+
+    function reflectBackend() {
+        $btnGL.setAttribute("aria-pressed", backendKind === "webgl2" ? "true" : "false");
+        $btnGPU.setAttribute("aria-pressed", backendKind === "webgpu" ? "true" : "false");
+    }
+
+    // Fail closed: an unavailable WebGPU disables its button with a reason; WebGL2 stays live.
+    probeWebGPU().then((p) => {
+        if (!p.available) {
+            $btnGPU.disabled = true;
+            $btnGPU.title = "WebGPU unavailable in this browser";
+        }
+    });
+
+    $toggle.addEventListener("click", (e) => {
+        const b = e.target.closest("button[data-backend]");
+        if (!b || b.disabled) return;
+        const kind = b.dataset.backend;
+        if (kind === backendKind) return;
+        const sc = scenes[current];
+        if (sc.mounting()) return;            // ignore clicks while a mount is in flight
+        backendKind = kind;
+        reflectBackend();
+        sc.remount(kind);                     // active scene rebinds; renderer-agnostic DATA persists
+    });
+
     function activate(name) {
         if (name === current) return;
         scenes[current].stop();
         current = name;
-        for (const btn of $("tabs").children) btn.setAttribute("aria-current", btn.dataset.tab === name);
+        for (const btn of $("tabs").querySelectorAll("button[data-tab]")) {
+            btn.setAttribute("aria-current", btn.dataset.tab === name);
+        }
         for (const sec of document.querySelectorAll(".scene")) {
             if (sec.dataset.scene === name) sec.setAttribute("data-active", ""); else sec.removeAttribute("data-active");
         }
-        scenes[name].resize();
-        scenes[name].start();
+        const sc = scenes[name];
+        if (sc.mounting()) { sc.start(); return; }   // do not race an in-flight mount
+        if (sc.kind() !== backendKind) {             // this scene is on the other backend -> rebind
+            sc.start();                              // flag desired-running; remount starts on resolve
+            sc.remount(backendKind);
+            return;
+        }
+        sc.resize();
+        sc.start();
     }
 
     $("tabs").addEventListener("click", (e) => {

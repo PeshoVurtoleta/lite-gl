@@ -41,6 +41,8 @@ export const WEBGPU_FRAME_BASELINE = GPU_COST_ENCODER + GPU_COST_PASS + GPU_COST
 
 const GPU_BUFFER_MAP_READ = 0x0001;
 const GPU_BUFFER_VERTEX = 0x0020;
+/** The deferred-pick id target format -- how the mock tells a pick pipeline from a draw one. */
+const PICK_ID_FORMAT = "rgba8unorm";
 
 /** Encode a 24-bit instance id into an rgba8unorm pixel (little-endian), a=255. */
 export function encodeId(id) {
@@ -69,6 +71,11 @@ export function mockWebGPU(opts = {}) {
     // per-pass allocation in the hot loop); lastVertexBuffer exposes the vbo backing for
     // the byte-placement oracle. Set by the mock, read by GLWebGPU_test.mjs.
     lastLoadOp: null, lastVertexBuffer: null,
+    // Pipeline-descriptor observability (blend assertion). O(1) REFERENCES only -- the mock
+    // records the last draw/pick pipeline descriptor without deep-cloning or fabricating any
+    // per-call object, so T7(gpu) churn/retention stays clean. Draw is keyed by the context
+    // format; pick is keyed by PICK_ID_FORMAT (rgba8unorm).
+    lastDrawPipelineDesc: null, lastPickPipelineDesc: null,
   };
 
   let resolveLost;
@@ -116,6 +123,11 @@ export function mockWebGPU(opts = {}) {
     createShaderModule(desc) { rec.shaderModuleCount++; return { __tag: "shader" }; },
     createRenderPipeline(desc) {
       rec.pipelineCount++;
+      // Record an O(1) reference to the descriptor so a test can assert the blend key. The
+      // pick pipeline targets PICK_ID_FORMAT; every other target is a draw pipeline.
+      const t0 = desc && desc.fragment && desc.fragment.targets && desc.fragment.targets[0];
+      if (t0 && t0.format === PICK_ID_FORMAT) rec.lastPickPipelineDesc = desc;
+      else rec.lastDrawPipelineDesc = desc;
       return { getBindGroupLayout(i) { return { __tag: "bgl", index: i }; } };
     },
     createBindGroup(desc) { return { __tag: "bindGroup" }; },

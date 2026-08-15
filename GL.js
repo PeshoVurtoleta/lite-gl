@@ -29,7 +29,7 @@ import {
 import { frameDelta } from "@zakkster/lite-raf";
 
 /** Package version. Kept in sync with package.json and llms.txt (packaging law). */
-export const VERSION = "2.0.0-beta.0";
+export const VERSION = "2.0.0";
 
 /** Hard cap on a field's instance capacity: 2^30. Above this the power-of-two
  *  sizing (`p <<= 1`, a 32-bit shift) would wrap negative and `nextPow2` could

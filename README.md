@@ -305,6 +305,24 @@ needsHiPrecision(1e6, 0.5);          // false — ordinary chart coords, use LAY
 
 **Use `POINT` for almost everything.** Reach for `POINT_HI` when the *world* coordinates are large — timestamps, geodetic coords, deep-zoom fractals — or when you pan a large field often enough that CPU re-projection is the bottleneck. `PointHiSink` carries the full v1.3 surface: scissor, `pick()`, shared program cache, context-loss recovery. The ID pass projects through the same camera as the visible pass, so hover stays honest at any zoom.
 
+---
+
+### WebGPU blend: who owns it (v2.0)
+
+The WebGPU sink takes an opt-in `blend` at construction — `"opaque"` (default), `"additive"` (phosphor glow), or `"alpha"` (straight over-compositing):
+
+```js
+import { createGPUTarget, createGPUPointSink } from '@zakkster/lite-gl/webgpu';
+
+const target = await createGPUTarget(canvas);
+const glow   = createGPUPointSink(target, { capacity: 1_000_000, blend: 'additive' });
+glow.blend;  // "additive" — the normalized mode, read-only (introspection, not a caps flag)
+```
+
+**Blend ownership is the one asymmetry between the two backends.** WebGPU bakes blend into the render **pipeline**, so the mode is resolved **once, at construction** and consumed only when the draw pipeline is built — the per-frame `upload`/`draw`/`pick` bodies never read it. The WebGL2 sink has no such option: it leaves blend to whatever the **GL context** has enabled, and `pick()` saves and restores that context state around the ID pass. Same visual result, different owner.
+
+Two invariants hold on the WebGPU side. The **pick** pipeline is *always* opaque regardless of `blend` — blending a 24-bit id would corrupt the `r | g<<8 | b<<16` decode. And an unknown mode **fails closed**: it throws with a did-you-mean hint before any GPU resource is created, never a silent fall-through to opaque.
+
 ## Testing
 
 ```bash
